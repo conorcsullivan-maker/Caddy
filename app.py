@@ -124,7 +124,7 @@ if prompt := st.chat_input("Describe your shot..."):
 
     with st.chat_message("assistant"):
         response = client.messages.create(
-            model="claude-opus-4-7",
+            model="claude-sonnet-4-5",
             max_tokens=300,
             system=CADDY_PROMPT,
             messages=st.session_state.messages
