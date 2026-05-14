@@ -58,10 +58,7 @@ export default function LandingPage() {
 
       {/* Footer */}
       <footer className="px-6 py-8 max-w-md sm:max-w-2xl mx-auto w-full">
-        <div className="flex items-center justify-between text-[11px] text-muted">
-          <span className="eyebrow">Caddy · 2026</span>
-          <span>Conor Sullivan & Drew</span>
-        </div>
+        <p className="eyebrow text-muted text-center">Caddy · 2026</p>
       </footer>
     </main>
   );

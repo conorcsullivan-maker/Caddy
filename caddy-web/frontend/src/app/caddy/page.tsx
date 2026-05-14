@@ -88,8 +88,35 @@ export default function CaddyPage() {
     }
   }
 
+  function playTone(frequency: number) {
+    try {
+      const Ctor = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      const ctx = new Ctor();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.frequency.value = frequency;
+      osc.type = "sine";
+      gain.gain.setValueAtTime(0.18, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.09);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.09);
+    } catch {}
+  }
+
+  function vibrate(ms: number) {
+    if (typeof navigator !== "undefined" && navigator.vibrate) {
+      navigator.vibrate(ms);
+    }
+  }
+
   async function startRecording() {
     setError(null);
+    // Instant feedback — flip to recording state BEFORE the browser permission check
+    setRecording(true);
+    vibrate(40);
+    playTone(880); // bright "start" tone
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       audioChunksRef.current = [];
@@ -121,13 +148,15 @@ export default function CaddyPage() {
         }
       };
       recorder.start();
-      setRecording(true);
     } catch (err) {
+      setRecording(false);
       setError("Mic access denied. Allow microphone in browser settings.");
     }
   }
 
   function stopRecording() {
+    vibrate(40);
+    playTone(580); // softer "stop" tone
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
       mediaRecorderRef.current.stop();
     }
@@ -239,22 +268,33 @@ export default function CaddyPage() {
             </p>
           )}
           <form onSubmit={handleSendText} className="flex items-end gap-2">
-            <div className="flex-1 bg-cream border border-line rounded-3xl px-4 py-3 focus-within:border-forest transition">
-              <textarea
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey) {
-                    e.preventDefault();
-                    handleSendText();
-                  }
-                }}
-                placeholder={recording ? "Listening..." : "Talk to Caddy..."}
-                disabled={recording || transcribing}
-                rows={1}
-                className="w-full bg-transparent text-[15px] text-ink placeholder:text-muted/60 focus:outline-none resize-none max-h-[120px]"
-                style={{ minHeight: "22px" }}
-              />
+            <div className={`flex-1 border rounded-3xl px-4 py-3 transition ${
+              recording
+                ? "bg-red-50 border-red-300"
+                : "bg-cream border-line focus-within:border-forest"
+            }`}>
+              {recording ? (
+                <div className="flex items-center gap-2 py-1">
+                  <span className="w-2 h-2 rounded-full bg-red-600 animate-pulse" />
+                  <span className="text-[15px] text-red-700 italic">Listening — tap mic to send</span>
+                </div>
+              ) : (
+                <textarea
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      handleSendText();
+                    }
+                  }}
+                  placeholder="Talk to Caddy..."
+                  disabled={transcribing}
+                  rows={1}
+                  className="w-full bg-transparent text-[15px] text-ink placeholder:text-muted/60 focus:outline-none resize-none max-h-[120px]"
+                  style={{ minHeight: "22px" }}
+                />
+              )}
             </div>
             {input.trim() ? (
               <button
@@ -266,19 +306,27 @@ export default function CaddyPage() {
                 <SendIcon />
               </button>
             ) : (
-              <button
-                type="button"
-                onClick={toggleRecording}
-                disabled={transcribing}
-                className={`flex-shrink-0 w-12 h-12 rounded-full flex items-center justify-center transition ${
-                  recording
-                    ? "bg-red-600 text-white animate-pulse"
-                    : "bg-forest text-cream hover-lift"
-                } disabled:opacity-50`}
-                aria-label={recording ? "Stop recording" : "Tap to speak"}
-              >
-                <MicIcon />
-              </button>
+              <div className="relative flex-shrink-0 w-12 h-12">
+                {recording && (
+                  <>
+                    <span className="absolute inset-0 rounded-full bg-red-500/30 animate-ping" />
+                    <span className="absolute -inset-1 rounded-full ring-2 ring-red-500/40 animate-pulse" />
+                  </>
+                )}
+                <button
+                  type="button"
+                  onClick={toggleRecording}
+                  disabled={transcribing}
+                  className={`relative w-12 h-12 rounded-full flex items-center justify-center transition-all duration-150 ${
+                    recording
+                      ? "bg-red-600 text-white scale-110 shadow-lg shadow-red-600/40"
+                      : "bg-forest text-cream hover-lift"
+                  } disabled:opacity-50`}
+                  aria-label={recording ? "Stop recording" : "Tap to speak"}
+                >
+                  <MicIcon />
+                </button>
+              </div>
             )}
           </form>
         </div>
