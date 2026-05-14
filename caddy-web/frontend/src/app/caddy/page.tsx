@@ -197,14 +197,6 @@ export default function CaddyPage() {
           </Link>
           <div className="flex items-center gap-4">
             <button
-              onClick={() => setMuted(!muted)}
-              className={`p-1 rounded transition ${muted ? "text-muted/70 hover:text-forest" : "text-muted hover:text-forest"}`}
-              title={muted ? "Unmute caddy voice" : "Mute caddy voice"}
-              aria-label={muted ? "Unmute" : "Mute"}
-            >
-              {muted ? <SpeakerMutedIcon /> : <SpeakerIcon />}
-            </button>
-            <button
               onClick={handleReset}
               className="text-[12px] eyebrow text-muted hover:text-forest transition"
             >
@@ -297,6 +289,17 @@ export default function CaddyPage() {
                 />
               )}
             </div>
+            {/* Mute toggle — sits next to the mic since they're both audio controls */}
+            <button
+              type="button"
+              onClick={() => setMuted(!muted)}
+              className="flex-shrink-0 w-9 h-9 rounded-full text-muted hover:text-forest hover:bg-cream/60 flex items-center justify-center transition"
+              title={muted ? "Unmute Caddy voice" : "Mute Caddy voice"}
+              aria-label={muted ? "Unmute" : "Mute"}
+            >
+              {muted ? <SpeakerMutedIcon /> : <SpeakerIcon />}
+            </button>
+
             {input.trim() ? (
               <button
                 type="submit"
