@@ -57,6 +57,41 @@ COOKIE_SAMESITE = "none" if COOKIE_SECURE else "lax"
 # ────────────────────────────────────────────────────────────
 # Database
 # ────────────────────────────────────────────────────────────
+def seed_initial_admin():
+    """If BOOTSTRAP_ADMIN_* env vars are set and no admins exist yet,
+    create that user as an approved admin. Lets you bootstrap a fresh
+    production database without using a shell."""
+    username = os.environ.get("BOOTSTRAP_ADMIN_USERNAME", "").strip().lower()
+    pin = os.environ.get("BOOTSTRAP_ADMIN_PIN", "").strip()
+    full_name = os.environ.get("BOOTSTRAP_ADMIN_NAME", "Admin").strip()
+    if not username or not pin:
+        return
+    with db() as conn:
+        admin_count = conn.execute(
+            "SELECT COUNT(*) FROM users WHERE is_admin = 1"
+        ).fetchone()[0]
+        if admin_count > 0:
+            return
+        existing = conn.execute(
+            "SELECT id FROM users WHERE username = ?", (username,)
+        ).fetchone()
+        if existing:
+            # Promote existing user to admin
+            conn.execute(
+                "UPDATE users SET is_admin = 1, status = 'approved' WHERE username = ?",
+                (username,),
+            )
+            print(f"Promoted existing user '{username}' to admin")
+        else:
+            conn.execute(
+                """INSERT INTO users
+                   (username, pin_hash, full_name, status, is_admin, onboarded, created_at, approved_at)
+                   VALUES (?, ?, ?, 'approved', 1, 0, ?, ?)""",
+                (username, hash_pin(pin), full_name, now_iso(), now_iso()),
+            )
+            print(f"Bootstrapped admin user '{username}'")
+
+
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -482,6 +517,7 @@ def delete_user(user_id: int, admin: dict = Depends(require_admin)):
 @app.on_event("startup")
 def startup():
     init_db()
+    seed_initial_admin()
     print(f"Database ready at {DB_PATH}")
 
 
