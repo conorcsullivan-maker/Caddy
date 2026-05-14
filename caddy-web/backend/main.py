@@ -21,7 +21,12 @@ from dotenv import load_dotenv
 # In production, env vars are injected by the host (Render), so missing .env is fine.
 load_dotenv(Path(__file__).parent.parent.parent / ".env", override=True)
 
-from caddy_engine import caddy_reply, transcribe_audio, synthesize_speech
+from caddy_engine import caddy_reply, transcribe_audio, synthesize_speech, anthropic_client, build_system_prompt
+from caddy_round import (
+    detect_and_load_course, detect_and_log_score, apply_score_to_round_state,
+    infer_drive_distance, is_end_of_round, calculate_handicap,
+    format_course_context, format_score_context,
+)
 
 # ────────────────────────────────────────────────────────────
 # Setup
@@ -119,13 +124,30 @@ def init_db():
             rounds TEXT,
             handicap_index REAL,
             tendencies_summary TEXT,
-            conversation_history TEXT
+            conversation_history TEXT,
+            active_round_state TEXT
+        )
+    """)
+    # Conversations archive — every chat preserved, never discarded
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS conversations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            kind TEXT NOT NULL DEFAULT 'casual',
+            course_name TEXT,
+            total_score INTEGER,
+            messages TEXT NOT NULL,
+            round_metadata TEXT,
+            started_at TEXT NOT NULL,
+            ended_at TEXT NOT NULL,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
         )
     """)
     # Migration safety: ALTER TABLE for any column added after the original schema
     for col_def in (
         "ALTER TABLE users ADD COLUMN referral TEXT",
         "ALTER TABLE users ADD COLUMN conversation_history TEXT",
+        "ALTER TABLE users ADD COLUMN active_round_state TEXT",
     ):
         try:
             c.execute(col_def)
@@ -272,6 +294,61 @@ def save_conversation(user_id: int, history: list[dict]):
         )
 
 
+def load_round_state(user_id: int) -> dict:
+    with db() as conn:
+        row = conn.execute(
+            "SELECT active_round_state FROM users WHERE id = ?", (user_id,)
+        ).fetchone()
+    if not row or not row["active_round_state"]:
+        return {"hole_scores": [], "current_hole": 1}
+    try:
+        state = json.loads(row["active_round_state"])
+        state.setdefault("hole_scores", [])
+        state.setdefault("current_hole", 1)
+        return state
+    except Exception:
+        return {"hole_scores": [], "current_hole": 1}
+
+
+def save_round_state(user_id: int, state: dict):
+    with db() as conn:
+        conn.execute(
+            "UPDATE users SET active_round_state = ? WHERE id = ?",
+            (json.dumps(state), user_id),
+        )
+
+
+def clear_round_state(user_id: int):
+    with db() as conn:
+        conn.execute("UPDATE users SET active_round_state = NULL WHERE id = ?", (user_id,))
+
+
+def archive_conversation(user_id: int, kind: str = "casual",
+                         course_name: Optional[str] = None,
+                         total_score: Optional[int] = None,
+                         round_metadata: Optional[dict] = None):
+    """Move the user's current conversation_history into the conversations table."""
+    history = load_conversation(user_id)
+    if not history:
+        return None
+    started = history[0].get("timestamp") or now_iso()
+    with db() as conn:
+        cur = conn.execute(
+            """INSERT INTO conversations
+               (user_id, kind, course_name, total_score, messages, round_metadata, started_at, ended_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                user_id, kind, course_name, total_score,
+                json.dumps(history),
+                json.dumps(round_metadata) if round_metadata else None,
+                started, now_iso(),
+            ),
+        )
+        conv_id = cur.lastrowid
+        conn.execute("UPDATE users SET conversation_history = NULL WHERE id = ?", (user_id,))
+    return conv_id
+
+
 # ────────────────────────────────────────────────────────────
 # Public endpoints
 # ────────────────────────────────────────────────────────────
@@ -366,44 +443,256 @@ def complete_setup(payload: BagSetupRequest, user: dict = Depends(get_current_us
 # ────────────────────────────────────────────────────────────
 @app.get("/api/caddy/history")
 def get_history(user: dict = Depends(get_current_user)):
-    return {"history": load_conversation(user["id"])}
+    return {
+        "history": load_conversation(user["id"]),
+        "round_state": load_round_state(user["id"]),
+    }
 
 
 @app.post("/api/caddy/reset")
 def reset_history(user: dict = Depends(get_current_user)):
-    save_conversation(user["id"], [])
-    return {"status": "reset"}
+    """Archive the current conversation as 'casual' and start fresh."""
+    state = load_round_state(user["id"])
+    course_name = (state.get("course") or {}).get("club_name")
+    archived_id = archive_conversation(user["id"], kind="casual", course_name=course_name)
+    clear_round_state(user["id"])
+    return {"status": "reset", "archived_conversation_id": archived_id}
+
+
+def process_user_message(user: dict, message: str) -> dict:
+    """The full message processing pipeline:
+    - Detect course mention → load it
+    - Detect score report → log it
+    - Detect drive distance → infer it
+    - Detect end-of-round → trigger save
+    - Build dynamic system context (player + course + score)
+    - Get Claude reply
+    - Save state
+    Returns dict with reply, round_state, and any events that fired.
+    """
+    history = load_conversation(user["id"])
+    round_state = load_round_state(user["id"])
+    events = []
+
+    # 1. End-of-round detection (highest priority — short-circuits other processing)
+    if is_end_of_round(message) and round_state.get("hole_scores"):
+        return handle_round_complete(user, history, message, round_state)
+
+    # 2. Course detection (only if no course loaded)
+    course_load = detect_and_load_course(message, round_state)
+    if course_load:
+        round_state["course"] = course_load["course"]
+        round_state["tee"] = course_load["tee"]
+        round_state["started_at"] = round_state.get("started_at") or now_iso()
+        events.append({
+            "type": "course_loaded",
+            "course_name": course_load["course"].get("club_name"),
+            "tee_name": course_load["tee"].get("tee_name"),
+        })
+
+    # 3. Score detection
+    score_result = detect_and_log_score(message, round_state)
+    if score_result:
+        apply_score_to_round_state(round_state, score_result["hole"], score_result["score"])
+        events.append({"type": "score_logged", **score_result})
+
+    # 4. Drive distance inference
+    drive_result = infer_drive_distance(message, round_state)
+    if drive_result:
+        events.append({"type": "drive_inferred", **drive_result})
+
+    # 5. Build dynamic context for Claude
+    course_ctx = format_course_context(round_state)
+    score_ctx = format_score_context(round_state)
+    round_context = course_ctx + score_ctx
+
+    # 6. Get Claude's reply
+    reply = caddy_reply(user, history, message, round_context=round_context)
+
+    # 7. Save state
+    history.append({"role": "user", "content": message})
+    history.append({"role": "assistant", "content": reply})
+    save_conversation(user["id"], history)
+    save_round_state(user["id"], round_state)
+
+    return {
+        "reply": reply,
+        "user_message": message,
+        "round_state": round_state,
+        "events": events,
+    }
+
+
+def handle_round_complete(user: dict, history: list, message: str, round_state: dict) -> dict:
+    """End-of-round flow: generate tendencies summary, save round to profile,
+    update handicap, archive conversation, clear active round state."""
+    hole_scores = [s for s in (round_state.get("hole_scores") or []) if s is not None]
+    total_score = sum(hole_scores) if hole_scores else None
+    course = round_state.get("course") or {}
+    tee = round_state.get("tee") or {}
+    course_name = course.get("club_name", "Unknown course")
+    course_rating = tee.get("course_rating")
+    slope_rating = tee.get("slope_rating")
+
+    differential = None
+    if total_score and course_rating and slope_rating:
+        differential = round((total_score - course_rating) * 113 / slope_rating, 1)
+
+    # 1. Build a tendencies summary via Claude using the round transcript
+    if hole_scores and anthropic_client:
+        summary_prompt = (
+            "The round is complete. Based on everything we discussed and logged today — "
+            "shot results, misses, what was working — write a concise updated tendencies "
+            "summary for my player profile. Write in second person, factual, under 150 words. "
+            "This will inform your recommendations in future rounds."
+        )
+        try:
+            summary_messages = history + [{"role": "user", "content": summary_prompt}]
+            r = anthropic_client.messages.create(
+                model="claude-opus-4-7",
+                max_tokens=300,
+                system=build_system_prompt(user) + format_course_context(round_state) + format_score_context(round_state),
+                messages=summary_messages,
+            )
+            new_tendencies = r.content[0].text
+        except Exception:
+            new_tendencies = user.get("tendencies_summary")
+    else:
+        new_tendencies = user.get("tendencies_summary")
+
+    # 2. Save round to user's rounds list
+    rounds = user.get("rounds") or []
+    if total_score:
+        round_record = {
+            "date": now_iso()[:10],
+            "course": course_name,
+            "score": total_score,
+            "holes": len(hole_scores),
+            "hole_scores": round_state.get("hole_scores"),
+            "course_rating": course_rating,
+            "slope_rating": slope_rating,
+            "differential": differential,
+        }
+        rounds.append(round_record)
+
+    # 3. Recompute handicap
+    handicap = calculate_handicap(rounds) if total_score else user.get("handicap_index")
+
+    # 4. Generate Caddy's spoken sign-off
+    if total_score and differential is not None:
+        sign_off = f"Good round. Final: {total_score} at {course_name}. Differential {differential}. " + \
+                   (f"Handicap index updated to {handicap}." if handicap is not None else "Logged.")
+    elif total_score:
+        sign_off = f"Round logged: {total_score} at {course_name}. Saved."
+    else:
+        sign_off = "Round complete. No scores logged this time, so nothing to save."
+
+    # 5. Persist user profile updates
+    with db() as conn:
+        conn.execute(
+            """UPDATE users SET rounds = ?, handicap_index = ?, tendencies_summary = ?
+               WHERE id = ?""",
+            (json.dumps(rounds), handicap, new_tendencies, user["id"]),
+        )
+
+    # 6. Add the user's "round complete" message and Caddy's sign-off to history
+    history.append({"role": "user", "content": message})
+    history.append({"role": "assistant", "content": sign_off})
+    save_conversation(user["id"], history)
+
+    # 7. Archive the now-complete conversation as a 'round'
+    archive_conversation(
+        user["id"],
+        kind="round",
+        course_name=course_name,
+        total_score=total_score,
+        round_metadata={
+            "hole_scores": round_state.get("hole_scores"),
+            "course_rating": course_rating,
+            "slope_rating": slope_rating,
+            "differential": differential,
+            "handicap_after": handicap,
+        },
+    )
+
+    # 8. Clear active round state
+    clear_round_state(user["id"])
+
+    return {
+        "reply": sign_off,
+        "user_message": message,
+        "round_state": {"hole_scores": [], "current_hole": 1},
+        "events": [{
+            "type": "round_complete",
+            "course_name": course_name,
+            "total_score": total_score,
+            "differential": differential,
+            "handicap": handicap,
+        }],
+    }
 
 
 @app.post("/api/caddy/message")
 def caddy_message(payload: CaddyMessageRequest, user: dict = Depends(get_current_user)):
-    """Text message → Claude → returns response text."""
-    history = load_conversation(user["id"])
-    reply = caddy_reply(user, history, payload.message)
-    history.append({"role": "user", "content": payload.message})
-    history.append({"role": "assistant", "content": reply})
-    save_conversation(user["id"], history)
-    return {"reply": reply, "user_message": payload.message}
+    """Text message → full processing pipeline → response + events."""
+    return process_user_message(user, payload.message)
 
 
 @app.post("/api/caddy/voice")
-async def caddy_voice(
-    audio: UploadFile = File(...),
-    user: dict = Depends(get_current_user),
-):
-    """Audio in → Whisper transcript → Claude → returns transcript + reply text."""
+async def caddy_voice(audio: UploadFile = File(...), user: dict = Depends(get_current_user)):
+    """Audio in → Whisper transcript → full processing pipeline → transcript + response + events."""
     audio_bytes = await audio.read()
     if not audio_bytes:
         raise HTTPException(400, "Empty audio")
     transcript = transcribe_audio(audio_bytes, audio.filename or "audio.webm")
     if not transcript:
         raise HTTPException(400, "Could not understand audio")
-    history = load_conversation(user["id"])
-    reply = caddy_reply(user, history, transcript)
-    history.append({"role": "user", "content": transcript})
-    history.append({"role": "assistant", "content": reply})
-    save_conversation(user["id"], history)
-    return {"transcript": transcript, "reply": reply}
+    result = process_user_message(user, transcript)
+    return {"transcript": transcript, **result}
+
+
+@app.get("/api/caddy/conversations")
+def list_conversations(user: dict = Depends(get_current_user), limit: int = 50):
+    """List the current user's archived conversations, most recent first."""
+    with db() as conn:
+        rows = conn.execute(
+            """SELECT id, kind, course_name, total_score, started_at, ended_at, round_metadata
+               FROM conversations WHERE user_id = ? ORDER BY ended_at DESC LIMIT ?""",
+            (user["id"], limit),
+        ).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        if d.get("round_metadata"):
+            try:
+                d["round_metadata"] = json.loads(d["round_metadata"])
+            except Exception:
+                d["round_metadata"] = None
+        out.append(d)
+    return {"conversations": out}
+
+
+@app.get("/api/caddy/conversations/{conv_id}")
+def get_conversation(conv_id: int, user: dict = Depends(get_current_user)):
+    """Get a single archived conversation with all messages."""
+    with db() as conn:
+        row = conn.execute(
+            "SELECT * FROM conversations WHERE id = ? AND user_id = ?",
+            (conv_id, user["id"]),
+        ).fetchone()
+    if not row:
+        raise HTTPException(404, "Conversation not found")
+    d = dict(row)
+    try:
+        d["messages"] = json.loads(d["messages"])
+    except Exception:
+        d["messages"] = []
+    if d.get("round_metadata"):
+        try:
+            d["round_metadata"] = json.loads(d["round_metadata"])
+        except Exception:
+            d["round_metadata"] = None
+    return d
 
 
 @app.post("/api/caddy/speak")

@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
-import { api, type User } from "@/lib/api";
+import { api, type User, type RoundState } from "@/lib/api";
 
 type Message = { role: "user" | "assistant"; content: string };
 
@@ -20,6 +20,7 @@ export default function CaddyPage() {
   const [muted, setMuted] = useState(false);
   const [recording, setRecording] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
+  const [roundState, setRoundState] = useState<RoundState>({ hole_scores: [], current_hole: 1 });
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
@@ -32,9 +33,11 @@ export default function CaddyPage() {
     api.me()
       .then(({ user }) => {
         setUser(user);
-        // History is non-critical — if it fails, just start with empty messages
         api.caddy.history()
-          .then(({ history }) => setMessages(history))
+          .then(({ history, round_state }) => {
+            setMessages(history);
+            if (round_state) setRoundState(round_state);
+          })
           .catch(() => setMessages([]));
       })
       .catch(() => router.push("/login"))
@@ -75,8 +78,9 @@ export default function CaddyPage() {
     setMessages((m) => [...m, { role: "user", content: text }]);
     setSending(true);
     try {
-      const { reply } = await api.caddy.message(text);
+      const { reply, round_state } = await api.caddy.message(text);
       setMessages((m) => [...m, { role: "assistant", content: reply }]);
+      if (round_state) setRoundState(round_state);
       speakText(reply);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong");
@@ -134,12 +138,13 @@ export default function CaddyPage() {
         }
         setTranscribing(true);
         try {
-          const { transcript, reply } = await api.caddy.voice(blob);
+          const { transcript, reply, round_state } = await api.caddy.voice(blob);
           setMessages((m) => [
             ...m,
             { role: "user", content: transcript },
             { role: "assistant", content: reply },
           ]);
+          if (round_state) setRoundState(round_state);
           speakText(reply);
         } catch (err) {
           setError(err instanceof Error ? err.message : "Voice failed");
@@ -169,9 +174,10 @@ export default function CaddyPage() {
   }
 
   async function handleReset() {
-    if (!confirm("Clear this conversation? Caddy won't remember anything from it.")) return;
+    if (!confirm("Start a new conversation? This one gets archived to your past conversations — nothing is lost.")) return;
     await api.caddy.reset();
     setMessages([]);
+    setRoundState({ hole_scores: [], current_hole: 1 });
   }
 
   async function handleLogout() {
@@ -225,6 +231,22 @@ export default function CaddyPage() {
           </div>
         </div>
       </header>
+
+      {/* Live round status bar — only shows when a round is in progress */}
+      {roundState.course && (
+        <div className="bg-forest text-cream px-5 py-2.5 border-b border-forest-deep flex-shrink-0">
+          <div className="max-w-2xl mx-auto w-full flex items-center justify-between text-[12px]">
+            <div className="flex items-center gap-3 min-w-0">
+              <span className="eyebrow text-gold">Round</span>
+              <span className="truncate">{roundState.course.club_name}</span>
+              {roundState.tee?.tee_name && (
+                <span className="text-cream/60">· {roundState.tee.tee_name}</span>
+              )}
+            </div>
+            <RoundScoreSummary state={roundState} />
+          </div>
+        </div>
+      )}
 
       {/* Message thread */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-6">
@@ -336,6 +358,30 @@ export default function CaddyPage() {
         </div>
       </div>
     </main>
+  );
+}
+
+function RoundScoreSummary({ state }: { state: RoundState }) {
+  const scores = (state.hole_scores || []).filter((s): s is number => s !== null);
+  const total = scores.reduce((a, b) => a + b, 0);
+  const playedHoles = (state.hole_scores || [])
+    .map((s, i) => ({ score: s, par: state.tee?.holes?.[i]?.par }))
+    .filter((h): h is { score: number; par: number | undefined } => h.score !== null);
+  const parTotal = playedHoles.reduce((a, h) => a + (h.par ?? 0), 0);
+  const vs = parTotal ? total - parTotal : null;
+  const vsLabel = vs === null ? "" : vs === 0 ? "E" : vs > 0 ? `+${vs}` : `${vs}`;
+  const cur = state.current_hole || playedHoles.length + 1;
+
+  if (playedHoles.length === 0) {
+    return <span className="text-cream/60">Hole {cur} · ready when you are</span>;
+  }
+  return (
+    <span className="flex items-center gap-2">
+      <span className="text-cream/70">Hole {cur}</span>
+      <span className="text-cream/40">·</span>
+      <span className="font-semibold">{total}</span>
+      {vsLabel && <span className="text-gold">({vsLabel})</span>}
+    </span>
   );
 }
 

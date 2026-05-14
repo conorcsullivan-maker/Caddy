@@ -5,6 +5,39 @@
 // This keeps cookies first-party (critical for mobile Safari) and avoids CORS.
 const API_BASE = "";
 
+export type RoundState = {
+  course?: { club_name?: string } | null;
+  tee?: { tee_name?: string; holes?: { par: number; yardage: number }[] } | null;
+  hole_scores?: (number | null)[];
+  current_hole?: number;
+};
+
+export type ChatEvent =
+  | { type: "course_loaded"; course_name: string; tee_name: string }
+  | { type: "score_logged"; hole: number; score: number; par?: number | null }
+  | { type: "drive_inferred"; hole: number; hole_yardage: number; remaining: number; inferred_drive: number }
+  | { type: "round_complete"; course_name: string; total_score?: number | null; differential?: number | null; handicap?: number | null };
+
+export type ArchivedConversation = {
+  id: number;
+  kind: "casual" | "round";
+  course_name?: string | null;
+  total_score?: number | null;
+  started_at: string;
+  ended_at: string;
+  round_metadata?: {
+    hole_scores?: (number | null)[];
+    course_rating?: number | null;
+    slope_rating?: number | null;
+    differential?: number | null;
+    handicap_after?: number | null;
+  } | null;
+};
+
+export type ArchivedConversationDetail = ArchivedConversation & {
+  messages: { role: "user" | "assistant"; content: string }[];
+};
+
 export type Round = {
   date: string;
   course: string;
@@ -116,13 +149,22 @@ export const api = {
 
   caddy: {
     history: () =>
-      request<{ history: { role: "user" | "assistant"; content: string }[] }>(
-        "/api/caddy/history"
-      ),
+      request<{
+        history: { role: "user" | "assistant"; content: string }[];
+        round_state: RoundState;
+      }>("/api/caddy/history"),
     reset: () =>
-      request<{ status: string }>("/api/caddy/reset", { method: "POST" }),
+      request<{ status: string; archived_conversation_id?: number | null }>(
+        "/api/caddy/reset",
+        { method: "POST" }
+      ),
     message: (message: string) =>
-      request<{ reply: string; user_message: string }>("/api/caddy/message", {
+      request<{
+        reply: string;
+        user_message: string;
+        round_state: RoundState;
+        events: ChatEvent[];
+      }>("/api/caddy/message", {
         method: "POST",
         body: JSON.stringify({ message }),
       }),
@@ -138,8 +180,17 @@ export const api = {
         const data = await res.json().catch(() => ({}));
         throw new Error(data.detail || `Request failed (${res.status})`);
       }
-      return res.json() as Promise<{ transcript: string; reply: string }>;
+      return res.json() as Promise<{
+        transcript: string;
+        reply: string;
+        round_state: RoundState;
+        events: ChatEvent[];
+      }>;
     },
+    conversations: () =>
+      request<{ conversations: ArchivedConversation[] }>("/api/caddy/conversations"),
+    conversation: (id: number) =>
+      request<ArchivedConversationDetail>(`/api/caddy/conversations/${id}`),
     speakUrl: (text: string) => {
       // Returns a URL that will produce TTS audio when fetched (with auth cookie)
       const params = new URLSearchParams({ message: text });

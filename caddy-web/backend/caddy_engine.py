@@ -139,13 +139,16 @@ Iron miss: {iron_miss}
     return BASE_PROMPT + profile_section
 
 
-def caddy_reply(user: dict, conversation_history: list[dict], new_message: str) -> str:
-    """Send the latest user message to Claude and get the caddy's response."""
+def caddy_reply(user: dict, conversation_history: list[dict], new_message: str,
+                round_context: str = "") -> str:
+    """Send the latest user message to Claude with full context (player + active round)
+    and return the caddy's response."""
+    system = build_system_prompt(user) + (round_context or "")
     messages = conversation_history + [{"role": "user", "content": new_message}]
     response = anthropic_client.messages.create(
         model="claude-opus-4-7",
         max_tokens=400,
-        system=build_system_prompt(user),
+        system=system,
         messages=messages,
     )
     return response.content[0].text
