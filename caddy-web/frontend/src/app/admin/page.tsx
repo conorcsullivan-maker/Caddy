@@ -134,6 +134,29 @@ export default function AdminDashboard() {
       </header>
 
       <section className="flex-1 px-6 py-8 max-w-3xl mx-auto w-full">
+        {/* Talk to Caddy CTA — admins are players too */}
+        <Link
+          href="/caddy"
+          className="group block mb-8 bg-forest hover:bg-forest-deep text-cream rounded-3xl px-5 py-4 transition shadow-md shadow-forest/20 hover-lift"
+        >
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-full bg-gold/20 flex items-center justify-center flex-shrink-0">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-gold">
+                  <rect x="9" y="2" width="6" height="12" rx="3" />
+                  <path d="M5 10v2a7 7 0 0 0 14 0v-2" />
+                  <line x1="12" y1="19" x2="12" y2="22" />
+                </svg>
+              </div>
+              <div>
+                <p className="eyebrow text-gold mb-0.5">Talk to Caddy</p>
+                <p className="text-[13px] text-cream/95">Get a recommendation. Log a score.</p>
+              </div>
+            </div>
+            <span className="text-gold/70 group-hover:text-gold group-hover:translate-x-1 transition">→</span>
+          </div>
+        </Link>
+
         {granted && (
           <div className="bg-forest text-cream rounded-2xl p-6 mb-8 relative">
             <button

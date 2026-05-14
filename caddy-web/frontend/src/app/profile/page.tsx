@@ -66,12 +66,6 @@ export default function ProfilePage() {
           </div>
           <div className="flex items-center gap-4">
             <Link
-              href="/caddy"
-              className="text-[12px] eyebrow text-forest hover:text-gold transition font-semibold"
-            >
-              Talk to Caddy
-            </Link>
-            <Link
               href="/setup/bag"
               className="text-[12px] eyebrow text-muted hover:text-forest transition"
             >
@@ -97,13 +91,36 @@ export default function ProfilePage() {
 
       <section className="flex-1 px-6 py-8 max-w-2xl mx-auto w-full">
         {/* Identity */}
-        <div className="mb-10">
+        <div className="mb-6">
           <p className="eyebrow text-gold mb-2">{user.is_admin ? "Player + Admin" : "Player"}</p>
           <h1 className="wordmark text-[44px] leading-tight text-forest mb-1">
             {user.full_name}
           </h1>
           <p className="text-[14px] text-muted">@{user.username}</p>
         </div>
+
+        {/* HERO CTA — Talk to Caddy */}
+        <Link
+          href="/caddy"
+          className="group block mb-10 bg-forest hover:bg-forest-deep text-cream rounded-3xl px-6 py-5 transition shadow-md shadow-forest/20 hover-lift"
+        >
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex items-center gap-4">
+              <div className="w-12 h-12 rounded-full bg-gold/20 flex items-center justify-center flex-shrink-0">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-gold">
+                  <rect x="9" y="2" width="6" height="12" rx="3" />
+                  <path d="M5 10v2a7 7 0 0 0 14 0v-2" />
+                  <line x1="12" y1="19" x2="12" y2="22" />
+                </svg>
+              </div>
+              <div>
+                <p className="eyebrow text-gold mb-0.5">Talk to Caddy</p>
+                <p className="text-[15px] text-cream/95 leading-snug">Get a recommendation. Log a score. Anytime.</p>
+              </div>
+            </div>
+            <span className="text-gold/70 group-hover:text-gold group-hover:translate-x-1 transition text-xl">→</span>
+          </div>
+        </Link>
 
         {/* Top stats */}
         <div className="grid grid-cols-3 gap-3 mb-10">
