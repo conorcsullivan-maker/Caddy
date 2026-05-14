@@ -261,6 +261,17 @@ export default function CaddyPage() {
             </p>
           )}
           <form onSubmit={handleSendText} className="flex items-end gap-2">
+            {/* Mute toggle — left side, away from the mic to prevent accidental taps */}
+            <button
+              type="button"
+              onClick={() => setMuted(!muted)}
+              className="flex-shrink-0 w-9 h-9 mb-1.5 rounded-full text-muted hover:text-forest hover:bg-cream/60 flex items-center justify-center transition"
+              title={muted ? "Unmute Caddy voice" : "Mute Caddy voice"}
+              aria-label={muted ? "Unmute" : "Mute"}
+            >
+              {muted ? <SpeakerMutedIcon /> : <SpeakerIcon />}
+            </button>
+
             <div className={`flex-1 border rounded-3xl px-4 py-3 transition ${
               recording
                 ? "bg-red-50 border-red-300"
@@ -289,17 +300,6 @@ export default function CaddyPage() {
                 />
               )}
             </div>
-            {/* Mute toggle — sits next to the mic since they're both audio controls */}
-            <button
-              type="button"
-              onClick={() => setMuted(!muted)}
-              className="flex-shrink-0 w-9 h-9 rounded-full text-muted hover:text-forest hover:bg-cream/60 flex items-center justify-center transition"
-              title={muted ? "Unmute Caddy voice" : "Mute Caddy voice"}
-              aria-label={muted ? "Unmute" : "Mute"}
-            >
-              {muted ? <SpeakerMutedIcon /> : <SpeakerIcon />}
-            </button>
-
             {input.trim() ? (
               <button
                 type="submit"
