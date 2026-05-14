@@ -456,6 +456,49 @@ def reject_user(user_id: int, admin: dict = Depends(require_admin)):
     return {"status": "rejected"}
 
 
+class ProfileImportRequest(BaseModel):
+    bag: Optional[dict] = None
+    driver_miss: Optional[str] = None
+    iron_miss: Optional[str] = None
+    home_course: Optional[str] = None
+    rounds: Optional[list] = None
+    handicap_index: Optional[float] = None
+    tendencies_summary: Optional[str] = None
+    onboarded: Optional[bool] = None
+
+
+@app.post("/api/admin/import-my-profile")
+def import_my_profile(payload: ProfileImportRequest, admin: dict = Depends(require_admin)):
+    """Bulk update the admin's own profile (bag, tendencies, rounds, etc.).
+    Used for one-time migration of existing data from local dev DB."""
+    updates = {}
+    if payload.bag is not None:
+        updates["bag"] = json.dumps(payload.bag)
+    if payload.driver_miss is not None:
+        updates["driver_miss"] = payload.driver_miss
+    if payload.iron_miss is not None:
+        updates["iron_miss"] = payload.iron_miss
+    if payload.home_course is not None:
+        updates["home_course"] = payload.home_course
+    if payload.rounds is not None:
+        updates["rounds"] = json.dumps(payload.rounds)
+    if payload.handicap_index is not None:
+        updates["handicap_index"] = payload.handicap_index
+    if payload.tendencies_summary is not None:
+        updates["tendencies_summary"] = payload.tendencies_summary
+    if payload.onboarded is not None:
+        updates["onboarded"] = 1 if payload.onboarded else 0
+
+    if not updates:
+        return {"status": "no_changes"}
+
+    set_clause = ", ".join(f"{k} = ?" for k in updates.keys())
+    values = list(updates.values()) + [admin["id"]]
+    with db() as conn:
+        conn.execute(f"UPDATE users SET {set_clause} WHERE id = ?", values)
+    return {"status": "updated", "fields": list(updates.keys())}
+
+
 @app.post("/api/admin/reset_pin/{user_id}")
 def reset_pin(user_id: int, admin: dict = Depends(require_admin)):
     new_pin = generate_pin()
