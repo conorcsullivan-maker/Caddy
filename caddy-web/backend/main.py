@@ -456,6 +456,49 @@ def reject_user(user_id: int, admin: dict = Depends(require_admin)):
     return {"status": "rejected"}
 
 
+class CreateUserDirectRequest(BaseModel):
+    username: str
+    pin_hash: str  # already hashed (sha256 hex)
+    full_name: str
+    is_admin: bool = False
+    onboarded: bool = False
+    bag: Optional[dict] = None
+    driver_miss: Optional[str] = None
+    iron_miss: Optional[str] = None
+    home_course: Optional[str] = None
+    rounds: Optional[list] = None
+    handicap_index: Optional[float] = None
+    tendencies_summary: Optional[str] = None
+
+
+@app.post("/api/admin/create-user-directly")
+def create_user_directly(payload: CreateUserDirectRequest, admin: dict = Depends(require_admin)):
+    """Admin: create a user with a pre-hashed PIN. Bypasses signup/approval.
+    Used for one-time migration of existing accounts from local dev DB."""
+    username = payload.username.lower().strip()
+    with db() as conn:
+        existing = conn.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()
+        if existing:
+            raise HTTPException(400, f"User '{username}' already exists")
+        bag_json = json.dumps(payload.bag) if payload.bag else None
+        rounds_json = json.dumps(payload.rounds) if payload.rounds else None
+        conn.execute("""
+            INSERT INTO users
+              (username, pin_hash, full_name, status, is_admin, onboarded,
+               created_at, approved_at, bag, driver_miss, iron_miss, home_course,
+               rounds, handicap_index, tendencies_summary)
+            VALUES (?, ?, ?, 'approved', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            username, payload.pin_hash, payload.full_name,
+            1 if payload.is_admin else 0,
+            1 if payload.onboarded else 0,
+            now_iso(), now_iso(),
+            bag_json, payload.driver_miss, payload.iron_miss, payload.home_course,
+            rounds_json, payload.handicap_index, payload.tendencies_summary,
+        ))
+    return {"status": "created", "username": username}
+
+
 class ProfileImportRequest(BaseModel):
     bag: Optional[dict] = None
     driver_miss: Optional[str] = None
