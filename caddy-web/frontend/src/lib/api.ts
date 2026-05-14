@@ -1,10 +1,13 @@
 // Thin API client for the Caddy backend.
-// The API base follows whatever host loaded the page — so if you open
-// http://10.0.0.227:3000 on your phone, the API calls go to
-// http://10.0.0.227:8000 (not localhost, which would be the phone itself).
+// In production, NEXT_PUBLIC_API_BASE is set to the deployed backend URL.
+// In local dev (no env var), the API base follows whatever host loaded the page —
+// so opening http://10.0.0.227:3000 on your phone calls http://10.0.0.227:8000.
 function getApiBase(): string {
+  if (process.env.NEXT_PUBLIC_API_BASE) {
+    return process.env.NEXT_PUBLIC_API_BASE;
+  }
   if (typeof window === "undefined") {
-    return process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000";
+    return "http://localhost:8000";
   }
   const { protocol, hostname } = window.location;
   return `${protocol}//${hostname}:8000`;
