@@ -1,0 +1,28 @@
+# Render deployment config — declares the service for one-click deploy.
+# https://render.com/docs/blueprint-spec
+services:
+  - type: web
+    name: caddy-api
+    runtime: python
+    region: oregon
+    plan: free
+    rootDir: caddy-web/backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: ANTHROPIC_API_KEY
+        sync: false       # set in Render dashboard
+      - key: OPENAI_API_KEY
+        sync: false       # set in Render dashboard
+      - key: GOLF_COURSE_API_KEY
+        sync: false       # set in Render dashboard
+      - key: FRONTEND_ORIGIN
+        sync: false       # set to your Vercel URL after deploy
+      - key: COOKIE_SECURE
+        value: "true"
+      - key: DATA_DIR
+        value: /data
+    disk:
+      name: caddy-data
+      mountPath: /data
+      sizeGB: 1            # ~$0.25/month — minimum is 1GB

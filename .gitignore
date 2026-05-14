@@ -1,0 +1,39 @@
+# macOS
+.DS_Store
+~$*
+
+# Editors / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+Untitled
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+venv/
+.venv/
+env/
+.env
+*.env
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+build/
+*.log
+npm-debug.log*
+
+# Sensitive data — DO NOT COMMIT
+profiles/*.json
+caddy-web/backend/caddy.db
+caddy-web/backend/caddy.db-*
+trackman_session_raw.json
+
+# OS / temp
+*.tmp
+*.bak

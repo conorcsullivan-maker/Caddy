@@ -1,0 +1,83 @@
+@import "tailwindcss";
+
+/* ── CADDY DESIGN SYSTEM ─────────────────────────────── */
+:root {
+  /* Brand colors */
+  --color-forest: #0E3A2E;
+  --color-forest-deep: #07201A;
+  --color-sage: #6E8E82;
+  --color-gold: #C9A961;
+  --color-gold-soft: #E0C896;
+  --color-cream: #F8F4ED;
+  --color-paper: #FDFBF6;
+  --color-ink: #1A1F1B;
+  --color-muted: #6B7268;
+  --color-line: #D7D2C3;
+
+  /* Defaults */
+  --background: var(--color-cream);
+  --foreground: var(--color-ink);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-forest: var(--color-forest);
+  --color-forest-deep: var(--color-forest-deep);
+  --color-sage: var(--color-sage);
+  --color-gold: var(--color-gold);
+  --color-gold-soft: var(--color-gold-soft);
+  --color-cream: var(--color-cream);
+  --color-paper: var(--color-paper);
+  --color-ink: var(--color-ink);
+  --color-muted: var(--color-muted);
+  --color-line: var(--color-line);
+  --font-sans: var(--font-geist-sans);
+  --font-serif: var(--font-instrument-serif);
+  --font-mono: var(--font-geist-mono);
+}
+
+* {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+html, body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-geist-sans), system-ui, -apple-system, sans-serif;
+}
+
+body {
+  /* Subtle texture for depth */
+  background-image: radial-gradient(circle at 20% 0%, rgba(110, 142, 130, 0.04) 0%, transparent 50%),
+                    radial-gradient(circle at 80% 100%, rgba(201, 169, 97, 0.03) 0%, transparent 50%);
+  background-attachment: fixed;
+}
+
+/* Premium serif wordmark */
+.wordmark {
+  font-family: var(--font-instrument-serif), Georgia, serif;
+  letter-spacing: -0.02em;
+  font-weight: 400;
+}
+
+/* Eyebrow text utility */
+.eyebrow {
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+/* Subtle hover transition */
+.hover-lift {
+  transition: transform 200ms ease, box-shadow 200ms ease;
+}
+.hover-lift:hover {
+  transform: translateY(-1px);
+}
+
+/* Hide scrollbar but keep scrollable */
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
