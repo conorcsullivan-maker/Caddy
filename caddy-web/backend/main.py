@@ -50,8 +50,10 @@ app.add_middleware(
 )
 
 # Cookie security: secure HTTPS-only in production, plain in local dev.
+# SameSite=Lax works because the frontend proxies /api/* through its own
+# origin (vercel.json + next.config.ts rewrites), making cookies first-party.
 COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "false").lower() == "true"
-COOKIE_SAMESITE = "none" if COOKIE_SECURE else "lax"
+COOKIE_SAMESITE = "lax"
 
 
 # ────────────────────────────────────────────────────────────

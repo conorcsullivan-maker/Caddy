@@ -1,18 +1,9 @@
 // Thin API client for the Caddy backend.
-// In production, NEXT_PUBLIC_API_BASE is set to the deployed backend URL.
-// In local dev (no env var), the API base follows whatever host loaded the page —
-// so opening http://10.0.0.227:3000 on your phone calls http://10.0.0.227:8000.
-function getApiBase(): string {
-  if (process.env.NEXT_PUBLIC_API_BASE) {
-    return process.env.NEXT_PUBLIC_API_BASE;
-  }
-  if (typeof window === "undefined") {
-    return "http://localhost:8000";
-  }
-  const { protocol, hostname } = window.location;
-  return `${protocol}//${hostname}:8000`;
-}
-const API_BASE = getApiBase();
+// All requests use relative paths — `/api/*` on the same origin.
+// • In local dev, next.config.ts rewrites `/api/*` to http://localhost:8000.
+// • In production, vercel.json rewrites `/api/*` to the deployed Render backend.
+// This keeps cookies first-party (critical for mobile Safari) and avoids CORS.
+const API_BASE = "";
 
 export type Round = {
   date: string;
