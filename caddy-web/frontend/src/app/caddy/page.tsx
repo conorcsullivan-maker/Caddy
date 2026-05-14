@@ -26,12 +26,16 @@ export default function CaddyPage() {
   const audioElementRef = useRef<HTMLAudioElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
-  // Initial load
+  // Initial load — auth check first, then history independently so a history
+  // error doesn't kick you back to login.
   useEffect(() => {
-    Promise.all([api.me(), api.caddy.history()])
-      .then(([{ user }, { history }]) => {
+    api.me()
+      .then(({ user }) => {
         setUser(user);
-        setMessages(history);
+        // History is non-critical — if it fails, just start with empty messages
+        api.caddy.history()
+          .then(({ history }) => setMessages(history))
+          .catch(() => setMessages([]));
       })
       .catch(() => router.push("/login"))
       .finally(() => setLoading(false));

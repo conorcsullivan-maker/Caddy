@@ -116,14 +116,19 @@ def init_db():
             home_course TEXT,
             rounds TEXT,
             handicap_index REAL,
-            tendencies_summary TEXT
+            tendencies_summary TEXT,
+            conversation_history TEXT
         )
     """)
-    # Add referral column to existing tables (migration safety)
-    try:
-        c.execute("ALTER TABLE users ADD COLUMN referral TEXT")
-    except sqlite3.OperationalError:
-        pass  # already exists
+    # Migration safety: ALTER TABLE for any column added after the original schema
+    for col_def in (
+        "ALTER TABLE users ADD COLUMN referral TEXT",
+        "ALTER TABLE users ADD COLUMN conversation_history TEXT",
+    ):
+        try:
+            c.execute(col_def)
+        except sqlite3.OperationalError:
+            pass  # column already exists
     c.execute("""
         CREATE TABLE IF NOT EXISTS sessions (
             token TEXT PRIMARY KEY,
