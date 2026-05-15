@@ -596,7 +596,13 @@ def process_user_message(user: dict, message: str,
     if course_loaded_now:
         # Casually acknowledge the course in passing while answering whatever else was asked.
         _course = round_state["course"]
-        _loc = (_course.get("location") or "").strip()
+        _raw_loc = _course.get("location")
+        if isinstance(_raw_loc, dict):
+            # API shape: {address, city, state, country}
+            _parts = [_raw_loc.get("city"), _raw_loc.get("state")]
+            _loc = ", ".join(p for p in _parts if p)
+        else:
+            _loc = (_raw_loc or "").strip()
         _loc_str = f" in {_loc}" if _loc else ""
         round_context += (
             f"\n\nNOTE: Course just auto-loaded: {_course.get('club_name')}{_loc_str}. "
