@@ -320,16 +320,14 @@ export default function CaddyPage() {
 
       {/* Live round status bar — only shows when a round is in progress */}
       {roundState.course && (
-        <div className="bg-forest text-cream px-5 py-2.5 border-b border-forest-deep flex-shrink-0">
-          <div className="max-w-2xl mx-auto w-full flex items-center justify-between text-[12px]">
-            <div className="flex items-center gap-3 min-w-0">
-              <span className="eyebrow text-gold">Round</span>
-              <span className="truncate">{roundState.course.club_name}</span>
-              {roundState.tee?.tee_name && (
-                <span className="text-cream/60">· {roundState.tee.tee_name}</span>
-              )}
-            </div>
-            <RoundScoreSummary state={roundState} />
+        <div className="bg-forest text-cream px-5 py-1.5 border-b border-forest-deep flex-shrink-0">
+          <div className="max-w-2xl mx-auto w-full text-[11px] flex items-center gap-3">
+            <span className="eyebrow text-gold flex-shrink-0">Round</span>
+            <span className="text-cream/95 truncate">
+              {shortCourseName(roundState.course.club_name)}
+              {roundState.tee?.tee_name ? ` · ${roundState.tee.tee_name}` : ""}
+              {` · ${formatHoleStatus(roundState)}`}
+            </span>
           </div>
         </div>
       )}
@@ -523,28 +521,25 @@ function WeatherStrip({ weather }: { weather: WeatherSnapshot }) {
   );
 }
 
-function RoundScoreSummary({ state }: { state: RoundState }) {
-  const scores = (state.hole_scores || []).filter((s): s is number => s !== null);
-  const total = scores.reduce((a, b) => a + b, 0);
-  const playedHoles = (state.hole_scores || [])
+// Drop common suffixes so long names like "William J. Devine Golf Course" fit
+function shortCourseName(name?: string): string {
+  if (!name) return "";
+  return name
+    .replace(/\s+(Golf Course|Golf Club|Country Club|Golf Links|Links)$/i, "")
+    .trim();
+}
+
+function formatHoleStatus(state: RoundState): string {
+  const played = (state.hole_scores || [])
     .map((s, i) => ({ score: s, par: state.tee?.holes?.[i]?.par }))
     .filter((h): h is { score: number; par: number | undefined } => h.score !== null);
-  const parTotal = playedHoles.reduce((a, h) => a + (h.par ?? 0), 0);
+  const cur = state.current_hole || played.length + 1;
+  if (played.length === 0) return `Hole ${cur}`;
+  const total = played.reduce((a, h) => a + (h.score ?? 0), 0);
+  const parTotal = played.reduce((a, h) => a + (h.par ?? 0), 0);
   const vs = parTotal ? total - parTotal : null;
-  const vsLabel = vs === null ? "" : vs === 0 ? "E" : vs > 0 ? `+${vs}` : `${vs}`;
-  const cur = state.current_hole || playedHoles.length + 1;
-
-  if (playedHoles.length === 0) {
-    return <span className="text-cream/60">Hole {cur} · ready when you are</span>;
-  }
-  return (
-    <span className="flex items-center gap-2">
-      <span className="text-cream/70">Hole {cur}</span>
-      <span className="text-cream/40">·</span>
-      <span className="font-semibold">{total}</span>
-      {vsLabel && <span className="text-gold">({vsLabel})</span>}
-    </span>
-  );
+  const vsLabel = vs === null ? "" : vs === 0 ? "E" : vs > 0 ? ` (+${vs})` : ` (${vs})`;
+  return `Hole ${cur} · ${total}${vsLabel}`;
 }
 
 function EmptyState({ firstName }: { firstName: string }) {
