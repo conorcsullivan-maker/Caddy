@@ -14,9 +14,24 @@ export type RoundState = {
 
 export type ChatEvent =
   | { type: "course_loaded"; course_name: string; tee_name: string }
+  | { type: "tee_changed"; tee_name: string }
   | { type: "score_logged"; hole: number; score: number; par?: number | null }
   | { type: "drive_inferred"; hole: number; hole_yardage: number; remaining: number; inferred_drive: number }
-  | { type: "round_complete"; course_name: string; total_score?: number | null; differential?: number | null; handicap?: number | null };
+  | { type: "round_complete"; course_name: string; total_score?: number | null; differential?: number | null; handicap?: number | null }
+  | { type: "weather_alert"; alerts: string[] };
+
+export type WeatherSnapshot = {
+  current?: {
+    short_forecast?: string;
+    temperature?: number;
+    temperature_unit?: string;
+    wind_speed?: string;
+    wind_direction?: string;
+    precip_chance?: number | null;
+    humidity?: number | null;
+  } | null;
+  alerts?: { event?: string; headline?: string; severity?: string; urgency?: string }[];
+};
 
 export type ArchivedConversation = {
   id: number;
@@ -158,20 +173,27 @@ export const api = {
         "/api/caddy/reset",
         { method: "POST" }
       ),
-    message: (message: string) =>
+    message: (message: string, location?: { lat: number; lng: number } | null) =>
       request<{
         reply: string;
         user_message: string;
         round_state: RoundState;
         events: ChatEvent[];
+        weather?: WeatherSnapshot | null;
       }>("/api/caddy/message", {
         method: "POST",
-        body: JSON.stringify({ message }),
+        body: JSON.stringify({
+          message,
+          ...(location ? { lat: location.lat, lng: location.lng } : {}),
+        }),
       }),
-    voice: async (audio: Blob) => {
+    voice: async (audio: Blob, location?: { lat: number; lng: number } | null) => {
       const form = new FormData();
       form.append("audio", audio, "speech.webm");
-      const res = await fetch(`${API_BASE}/api/caddy/voice`, {
+      const url = location
+        ? `${API_BASE}/api/caddy/voice?lat=${location.lat}&lng=${location.lng}`
+        : `${API_BASE}/api/caddy/voice`;
+      const res = await fetch(url, {
         method: "POST",
         credentials: "include",
         body: form,
@@ -185,6 +207,7 @@ export const api = {
         reply: string;
         round_state: RoundState;
         events: ChatEvent[];
+        weather?: WeatherSnapshot | null;
       }>;
     },
     conversations: () =>

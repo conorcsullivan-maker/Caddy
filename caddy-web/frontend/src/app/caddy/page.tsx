@@ -3,9 +3,10 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
-import { api, type User, type RoundState } from "@/lib/api";
+import { api, type User, type RoundState, type WeatherSnapshot } from "@/lib/api";
 
 type Message = { role: "user" | "assistant"; content: string };
+type Location = { lat: number; lng: number } | null;
 
 export default function CaddyPage() {
   const router = useRouter();
@@ -21,6 +22,9 @@ export default function CaddyPage() {
   const [recording, setRecording] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
   const [roundState, setRoundState] = useState<RoundState>({ hole_scores: [], current_hole: 1 });
+  const [location, setLocation] = useState<Location>(null);
+  const [weather, setWeather] = useState<WeatherSnapshot | null>(null);
+  const [locationStatus, setLocationStatus] = useState<"idle" | "asking" | "granted" | "denied">("idle");
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
@@ -42,6 +46,21 @@ export default function CaddyPage() {
       })
       .catch(() => router.push("/login"))
       .finally(() => setLoading(false));
+  }, []);
+
+  // Request geolocation once on page load so Caddy has live weather context.
+  // Permission is per-origin, so iOS/Chrome will only ask once across visits.
+  useEffect(() => {
+    if (typeof navigator === "undefined" || !navigator.geolocation) return;
+    setLocationStatus("asking");
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+        setLocationStatus("granted");
+      },
+      () => setLocationStatus("denied"),
+      { timeout: 10000, maximumAge: 5 * 60 * 1000 } // accept 5-min cached fix
+    );
   }, []);
 
   // Auto-scroll to bottom on new messages
@@ -78,9 +97,10 @@ export default function CaddyPage() {
     setMessages((m) => [...m, { role: "user", content: text }]);
     setSending(true);
     try {
-      const { reply, round_state } = await api.caddy.message(text);
+      const { reply, round_state, weather: w } = await api.caddy.message(text, location);
       setMessages((m) => [...m, { role: "assistant", content: reply }]);
       if (round_state) setRoundState(round_state);
+      if (w) setWeather(w);
       speakText(reply);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong");
@@ -138,13 +158,14 @@ export default function CaddyPage() {
         }
         setTranscribing(true);
         try {
-          const { transcript, reply, round_state } = await api.caddy.voice(blob);
+          const { transcript, reply, round_state, weather: w } = await api.caddy.voice(blob, location);
           setMessages((m) => [
             ...m,
             { role: "user", content: transcript },
             { role: "assistant", content: reply },
           ]);
           if (round_state) setRoundState(round_state);
+          if (w) setWeather(w);
           speakText(reply);
         } catch (err) {
           setError(err instanceof Error ? err.message : "Voice failed");
@@ -231,6 +252,16 @@ export default function CaddyPage() {
           </div>
         </div>
       </header>
+
+      {/* Weather strip — only shows when we have live data */}
+      {weather?.current && (
+        <WeatherStrip weather={weather} />
+      )}
+      {locationStatus === "denied" && (
+        <div className="bg-cream/60 border-b border-line px-5 py-2 text-[11px] text-muted text-center flex-shrink-0">
+          Location off — Caddy won&apos;t have live wind/weather. Enable in browser settings to fix.
+        </div>
+      )}
 
       {/* Live round status bar — only shows when a round is in progress */}
       {roundState.course && (
@@ -358,6 +389,43 @@ export default function CaddyPage() {
         </div>
       </div>
     </main>
+  );
+}
+
+function WeatherStrip({ weather }: { weather: WeatherSnapshot }) {
+  const cur = weather.current;
+  if (!cur) return null;
+  const hasCriticalAlert = (weather.alerts || []).some((a) => {
+    const e = (a.event || "").toLowerCase();
+    const s = (a.severity || "").toLowerCase();
+    return e.includes("tornado") || e.includes("thunderstorm") ||
+           e.includes("lightning") || s === "severe" || s === "extreme";
+  });
+
+  if (hasCriticalAlert) {
+    const alert = weather.alerts?.[0];
+    return (
+      <div className="bg-red-700 text-white px-5 py-2.5 border-b border-red-900 flex-shrink-0">
+        <div className="max-w-2xl mx-auto w-full text-[12px] flex items-center gap-2">
+          <span className="font-bold">⚠️ {alert?.event || "Severe weather"}</span>
+          <span className="text-white/80 truncate">{alert?.headline}</span>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-paper border-b border-line px-5 py-1.5 flex-shrink-0">
+      <div className="max-w-2xl mx-auto w-full text-[11px] text-muted flex items-center gap-3">
+        <span className="eyebrow text-gold">Weather</span>
+        <span className="text-ink truncate">
+          {cur.temperature}°{cur.temperature_unit || "F"}
+          {cur.short_forecast ? ` · ${cur.short_forecast}` : ""}
+          {cur.wind_speed ? ` · wind ${cur.wind_speed} ${cur.wind_direction || ""}` : ""}
+          {cur.precip_chance ? ` · ${cur.precip_chance}% rain` : ""}
+        </span>
+      </div>
+    </div>
   );
 }
 

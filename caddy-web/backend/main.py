@@ -27,6 +27,7 @@ from caddy_round import (
     apply_score_to_round_state, infer_drive_distance, is_end_of_round,
     calculate_handicap, format_course_context, format_score_context,
 )
+from caddy_weather import fetch_weather, format_weather_context, has_critical_alert
 
 # ────────────────────────────────────────────────────────────
 # Setup
@@ -266,6 +267,8 @@ class BagSetupRequest(BaseModel):
 
 class CaddyMessageRequest(BaseModel):
     message: str = Field(min_length=1, max_length=2000)
+    lat: Optional[float] = None
+    lng: Optional[float] = None
 
 
 # Limit conversation history to last N messages to keep Claude context manageable.
@@ -459,20 +462,31 @@ def reset_history(user: dict = Depends(get_current_user)):
     return {"status": "reset", "archived_conversation_id": archived_id}
 
 
-def process_user_message(user: dict, message: str) -> dict:
+def process_user_message(user: dict, message: str,
+                         lat: Optional[float] = None,
+                         lng: Optional[float] = None) -> dict:
     """The full message processing pipeline:
     - Detect course mention → load it
     - Detect score report → log it
     - Detect drive distance → infer it
     - Detect end-of-round → trigger save
-    - Build dynamic system context (player + course + score)
+    - Fetch live weather (if location provided)
+    - Build dynamic system context (player + course + score + weather)
     - Get Claude reply
     - Save state
-    Returns dict with reply, round_state, and any events that fired.
+    Returns dict with reply, round_state, weather, alerts, and any events that fired.
     """
     history = load_conversation(user["id"])
     round_state = load_round_state(user["id"])
     events = []
+    weather = None
+    if lat is not None and lng is not None:
+        weather = fetch_weather(lat, lng)
+        if weather and has_critical_alert(weather):
+            events.append({
+                "type": "weather_alert",
+                "alerts": [a.get("event") for a in weather.get("alerts") or []],
+            })
 
     # 1. End-of-round detection (highest priority — short-circuits other processing)
     if is_end_of_round(message) and round_state.get("hole_scores"):
@@ -510,7 +524,8 @@ def process_user_message(user: dict, message: str) -> dict:
     # 5. Build dynamic context for Claude
     course_ctx = format_course_context(round_state)
     score_ctx = format_score_context(round_state)
-    round_context = course_ctx + score_ctx
+    weather_ctx = format_weather_context(weather) if weather else ""
+    round_context = course_ctx + score_ctx + weather_ctx
 
     # 6. Get Claude's reply
     reply = caddy_reply(user, history, message, round_context=round_context)
@@ -525,6 +540,7 @@ def process_user_message(user: dict, message: str) -> dict:
         "reply": reply,
         "user_message": message,
         "round_state": round_state,
+        "weather": weather,
         "events": events,
     }
 
@@ -641,11 +657,16 @@ def handle_round_complete(user: dict, history: list, message: str, round_state: 
 @app.post("/api/caddy/message")
 def caddy_message(payload: CaddyMessageRequest, user: dict = Depends(get_current_user)):
     """Text message → full processing pipeline → response + events."""
-    return process_user_message(user, payload.message)
+    return process_user_message(user, payload.message, lat=payload.lat, lng=payload.lng)
 
 
 @app.post("/api/caddy/voice")
-async def caddy_voice(audio: UploadFile = File(...), user: dict = Depends(get_current_user)):
+async def caddy_voice(
+    audio: UploadFile = File(...),
+    lat: Optional[float] = None,
+    lng: Optional[float] = None,
+    user: dict = Depends(get_current_user),
+):
     """Audio in → Whisper transcript → full processing pipeline → transcript + response + events."""
     audio_bytes = await audio.read()
     if not audio_bytes:
@@ -653,7 +674,7 @@ async def caddy_voice(audio: UploadFile = File(...), user: dict = Depends(get_cu
     transcript = transcribe_audio(audio_bytes, audio.filename or "audio.webm")
     if not transcript:
         raise HTTPException(400, "Could not understand audio")
-    result = process_user_message(user, transcript)
+    result = process_user_message(user, transcript, lat=lat, lng=lng)
     return {"transcript": transcript, **result}
 
 
