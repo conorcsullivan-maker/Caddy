@@ -23,9 +23,9 @@ load_dotenv(Path(__file__).parent.parent.parent / ".env", override=True)
 
 from caddy_engine import caddy_reply, transcribe_audio, synthesize_speech, anthropic_client, build_system_prompt
 from caddy_round import (
-    detect_and_load_course, detect_and_log_score, apply_score_to_round_state,
-    infer_drive_distance, is_end_of_round, calculate_handicap,
-    format_course_context, format_score_context,
+    detect_and_load_course, detect_and_update_tee, detect_and_log_score,
+    apply_score_to_round_state, infer_drive_distance, is_end_of_round,
+    calculate_handicap, format_course_context, format_score_context,
 )
 
 # ────────────────────────────────────────────────────────────
@@ -489,6 +489,12 @@ def process_user_message(user: dict, message: str) -> dict:
             "course_name": course_load["course"].get("club_name"),
             "tee_name": course_load["tee"].get("tee_name"),
         })
+
+    # 2b. Tee change detection (course already loaded, player mentions a different tee color)
+    new_tee = detect_and_update_tee(message, round_state)
+    if new_tee:
+        round_state["tee"] = new_tee
+        events.append({"type": "tee_changed", "tee_name": new_tee.get("tee_name")})
 
     # 3. Score detection
     score_result = detect_and_log_score(message, round_state)

@@ -139,14 +139,24 @@ def get_course(course_id: int) -> Optional[dict]:
 
 
 def find_tee(course: dict, tee_color: Optional[str] = None) -> Optional[dict]:
+    """Find a male tee matching the color, or fall back to a sensible default
+    (second-longest, since the longest tees are usually championship/tips)."""
     male_tees = course.get("tees", {}).get("male", [])
     if not male_tees:
         return None
     if tee_color:
+        # Match by name containing the color (handles 'BLUE', 'WHITE/BLUE', etc.)
         for tee in male_tees:
             if tee_color.lower() in tee["tee_name"].lower():
                 return tee
-    return male_tees[0]
+    # Default: sort by total yards descending, pick the SECOND longest
+    # (longest tees are usually 'tips' / championship; most amateurs play one back)
+    sorted_tees = sorted(
+        male_tees, key=lambda t: t.get("total_yards") or 0, reverse=True
+    )
+    if len(sorted_tees) >= 2:
+        return sorted_tees[1]
+    return sorted_tees[0]
 
 
 def extract_tee_color(text: str) -> Optional[str]:
@@ -154,6 +164,25 @@ def extract_tee_color(text: str) -> Optional[str]:
         if color in text.lower():
             return color
     return None
+
+
+def detect_and_update_tee(text: str, round_state: dict) -> Optional[dict]:
+    """If the player mentions a tee color and a course is already loaded,
+    switch to that tee. Returns the new tee dict if changed, otherwise None."""
+    course = round_state.get("course")
+    current_tee = round_state.get("tee") or {}
+    if not course:
+        return None
+    color = extract_tee_color(text)
+    if not color:
+        return None
+    new_tee = find_tee(course, color)
+    if not new_tee:
+        return None
+    # Only fire an "update" event if it's actually a different tee
+    if new_tee.get("tee_name") == current_tee.get("tee_name"):
+        return None
+    return new_tee
 
 
 def detect_and_load_course(text: str, current_round_state: dict) -> Optional[dict]:
