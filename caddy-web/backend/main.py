@@ -421,6 +421,29 @@ def me(user: dict = Depends(get_current_user)):
     return {"user": user}
 
 
+@app.delete("/api/me/rounds/{round_index}")
+def delete_round(round_index: int, user: dict = Depends(get_current_user)):
+    """Remove a round from the user's history by its array index, then
+    recalculate handicap from the remaining rounds."""
+    rounds = user.get("rounds") or []
+    if round_index < 0 or round_index >= len(rounds):
+        raise HTTPException(404, "Round not found")
+    removed = rounds.pop(round_index)
+    from caddy_round import calculate_handicap
+    new_handicap = calculate_handicap(rounds)
+    with db() as conn:
+        conn.execute(
+            "UPDATE users SET rounds = ?, handicap_index = ? WHERE id = ?",
+            (json.dumps(rounds), new_handicap, user["id"]),
+        )
+    return {
+        "status": "deleted",
+        "removed": removed,
+        "rounds_remaining": len(rounds),
+        "handicap_index": new_handicap,
+    }
+
+
 @app.post("/api/me/setup")
 def complete_setup(payload: BagSetupRequest, user: dict = Depends(get_current_user)):
     """Save bag distances + miss tendencies + home course. Marks user as onboarded."""

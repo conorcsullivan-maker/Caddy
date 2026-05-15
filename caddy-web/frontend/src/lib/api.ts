@@ -162,6 +162,12 @@ export const api = {
       body: JSON.stringify(payload),
     }),
 
+  deleteRound: (index: number) =>
+    request<{ status: string; rounds_remaining: number; handicap_index: number | null }>(
+      `/api/me/rounds/${index}`,
+      { method: "DELETE" }
+    ),
+
   caddy: {
     history: () =>
       request<{

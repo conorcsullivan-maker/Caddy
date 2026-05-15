@@ -33,6 +33,12 @@ export default function ProfilePage() {
   const [loading, setLoading] = useState(true);
   const [conversations, setConversations] = useState<ArchivedConversation[]>([]);
 
+  async function refreshUser() {
+    const { user } = await api.me();
+    setUser(user);
+    return user;
+  }
+
   useEffect(() => {
     api.me()
       .then(({ user }) => {
@@ -44,6 +50,16 @@ export default function ProfilePage() {
       .catch(() => router.push("/login"))
       .finally(() => setLoading(false));
   }, []);
+
+  async function handleDeleteRound(originalIndex: number) {
+    if (!confirm("Delete this round? Your handicap will recalculate.")) return;
+    try {
+      await api.deleteRound(originalIndex);
+      await refreshUser();
+    } catch (err) {
+      alert("Couldn't delete round: " + (err instanceof Error ? err.message : "unknown"));
+    }
+  }
 
   async function handleLogout() {
     await api.logout();
@@ -175,7 +191,7 @@ export default function ProfilePage() {
 
         {/* Recent rounds */}
         <Section title="Recent rounds">
-          <RecentRounds rounds={user.rounds || []} />
+          <RecentRounds rounds={user.rounds || []} onDelete={handleDeleteRound} />
         </Section>
 
         {/* Past conversations — every chat archived, never lost */}
@@ -243,16 +259,24 @@ function Empty({ text }: { text: string }) {
   );
 }
 
-function RecentRounds({ rounds }: { rounds: Round[] }) {
+function RecentRounds({
+  rounds,
+  onDelete,
+}: {
+  rounds: Round[];
+  onDelete: (originalIndex: number) => void;
+}) {
   const [expanded, setExpanded] = useState<number | null>(null);
 
   if (rounds.length === 0) {
     return <Empty text="No rounds logged yet. Caddy will track these as you play." />;
   }
 
+  // Pair each round with its original index BEFORE sorting (we need it to delete)
+  const indexed = rounds.map((r, originalIndex) => ({ r, originalIndex }));
   // Sort by date descending (most recent first)
-  const sorted = [...rounds].sort((a, b) =>
-    (b.date || "").localeCompare(a.date || "")
+  const sorted = [...indexed].sort((a, b) =>
+    (b.r.date || "").localeCompare(a.r.date || "")
   );
 
   function formatDate(dateStr: string) {
@@ -264,11 +288,11 @@ function RecentRounds({ rounds }: { rounds: Round[] }) {
 
   return (
     <div className="bg-paper border border-line rounded-2xl divide-y divide-line">
-      {sorted.map((r, i) => {
+      {sorted.map(({ r, originalIndex }, i) => {
         const isOpen = expanded === i;
         const hasDetails = r.hole_scores || r.differential != null || r.course_rating != null;
         return (
-          <div key={i}>
+          <div key={originalIndex}>
             <button
               onClick={() => hasDetails && setExpanded(isOpen ? null : i)}
               disabled={!hasDetails}
@@ -310,7 +334,7 @@ function RecentRounds({ rounds }: { rounds: Round[] }) {
                     </div>
                   </div>
                 )}
-                <div className="grid grid-cols-3 gap-2 text-[11px]">
+                <div className="grid grid-cols-3 gap-2 text-[11px] mb-4">
                   {r.course_rating != null && (
                     <Stat2 label="Rating" value={r.course_rating.toFixed(1)} />
                   )}
@@ -320,6 +344,17 @@ function RecentRounds({ rounds }: { rounds: Round[] }) {
                   {r.holes != null && (
                     <Stat2 label="Holes" value={String(r.holes)} />
                   )}
+                </div>
+                <div className="flex justify-end pt-2 border-t border-line/50">
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onDelete(originalIndex);
+                    }}
+                    className="text-[11px] eyebrow text-muted hover:text-red-700 transition"
+                  >
+                    Delete round
+                  </button>
                 </div>
               </div>
             )}
