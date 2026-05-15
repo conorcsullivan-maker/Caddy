@@ -671,14 +671,22 @@ def format_score_context(round_state: dict) -> str:
             par_total += par
             diff = score - par
             label = {-2: "eagle", -1: "birdie", 0: "par", 1: "bogey", 2: "double", 3: "triple"}.get(diff, f"+{diff}" if diff > 0 else str(diff))
-            lines.append(f"  Hole {hole_num}: {score} ({label})")
+            lines.append(f"  Hole {hole_num} (par {par}): {score} — {label}")
         else:
             lines.append(f"  Hole {hole_num}: {score}")
         total += score
-    lines.append(f"Total: {total} through {len(logged)} holes")
     if par_total:
         vs = total - par_total
-        rel = "even" if vs == 0 else (f"+{vs}" if vs > 0 else str(vs))
-        lines.append(f"Vs par: {rel}")
+        if vs == 0:
+            status = f"even par ({total} strokes through {len(logged)} holes)"
+        elif vs > 0:
+            status = f"{vs}-over par ({total} strokes through {len(logged)} holes)"
+        else:
+            status = f"{abs(vs)}-under par ({total} strokes through {len(logged)} holes)"
+        lines.append(f"")
+        lines.append(f"ROUND STATUS: {status}")
+        lines.append(f"When the player asks about their score or you acknowledge a result, use this exact status — do not recompute it.")
+    else:
+        lines.append(f"Total: {total} through {len(logged)} holes")
     lines.append(f"Current hole: {round_state.get('current_hole', len(logged) + 1)}")
     return "\n".join(lines)

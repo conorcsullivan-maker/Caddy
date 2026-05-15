@@ -27,7 +27,7 @@ from caddy_round import (
     apply_score_to_round_state, infer_drive_distance, is_end_of_round,
     calculate_handicap, format_course_context, format_score_context,
     find_synthetic_course, build_course_from_synthetic, save_synthetic_course,
-    find_tee, search_course, get_course,
+    find_tee, search_course, get_course, get_hole_par,
     detect_course_note, save_hole_note,
 )
 from caddy_weather import fetch_weather, format_weather_context, has_critical_alert
@@ -576,9 +576,11 @@ def process_user_message(user: dict, message: str,
 
     # 3. Score detection
     score_result = detect_and_log_score(message, round_state)
+    score_just_logged: Optional[dict] = None
     if score_result:
         apply_score_to_round_state(round_state, score_result["hole"], score_result["score"])
         events.append({"type": "score_logged", **score_result})
+        score_just_logged = score_result
 
     # 4. Drive distance inference
     drive_result = infer_drive_distance(message, round_state)
@@ -634,6 +636,35 @@ def process_user_message(user: dict, message: str,
     elif round_state.get("course_confirmed") is False:
         # Player responded to a course load without rejecting — treat as implicit confirmation.
         round_state["course_confirmed"] = True
+
+    # Score logging hint — pre-compute the running total so Claude doesn't do arithmetic.
+    # Without this, Claude has been mistaking "par on this hole" for "even par overall."
+    if score_just_logged:
+        _hole_scores = [s for s in (round_state.get("hole_scores") or []) if s is not None]
+        _par_total = sum(
+            get_hole_par(round_state, i + 1) or 0
+            for i, s in enumerate(round_state.get("hole_scores") or [])
+            if s is not None
+        )
+        _stroke_total = sum(_hole_scores)
+        _vs = _stroke_total - _par_total if _par_total else None
+        if _vs is None:
+            _status_str = f"{_stroke_total} strokes through {len(_hole_scores)} holes"
+        elif _vs == 0:
+            _status_str = f"even par through {len(_hole_scores)} holes"
+        elif _vs > 0:
+            _status_str = f"{_vs}-over par through {len(_hole_scores)} holes"
+        else:
+            _status_str = f"{abs(_vs)}-under par through {len(_hole_scores)} holes"
+        _result_label = {-2: "eagle", -1: "birdie", 0: "par", 1: "bogey", 2: "double bogey"}.get(
+            (score_just_logged.get("score") or 0) - (score_just_logged.get("par") or 0),
+            f"{score_just_logged.get('score')}"
+        )
+        round_context += (
+            f"\n\nNOTE: Player just reported {score_just_logged.get('score')} on hole {score_just_logged.get('hole')} "
+            f"({_result_label}). Round status is now: {_status_str}. "
+            f"Acknowledge in one short sentence using this exact status — do not recompute."
+        )
 
     # 6. Get Claude's reply
     reply = caddy_reply(user, history, message, round_context=round_context)
