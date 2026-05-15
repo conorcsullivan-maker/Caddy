@@ -70,8 +70,8 @@ COURSE_MENTION_KEYWORDS = ["at ", "playing", "arrived", "tee off", "course", "cl
 # ────────────────────────────────────────────────────────────
 # Course detection / loading
 # ────────────────────────────────────────────────────────────
-def search_course(query: str) -> list:
-    if not GOLF_COURSE_API_KEY:
+def _raw_search(query: str) -> list:
+    if not GOLF_COURSE_API_KEY or not query.strip():
         return []
     try:
         r = requests.get(
@@ -83,6 +83,44 @@ def search_course(query: str) -> list:
         return r.json().get("courses", []) if r.status_code == 200 else []
     except Exception:
         return []
+
+
+def search_course(query: str) -> list:
+    """Search the Golf Course API with fallback strategies for fuzzy matches.
+
+    The API does substring-ish matching, so 'Butter Brook Golf Course' doesn't
+    match a course stored as 'Butter Brook Golf Club'. We progressively trim
+    common suffixes/words until we find something."""
+    if not query:
+        return []
+
+    # 1. Exact query
+    results = _raw_search(query)
+    if results:
+        return results
+
+    # 2. Strip common golf-suffix words and try again
+    stop_suffixes = ("course", "club", "golf", "country", "links", "association", "the")
+    words = [w for w in query.strip().split() if w]
+    while len(words) > 1:
+        last = words[-1].lower().strip(".,!?'\"")
+        if last in stop_suffixes:
+            words = words[:-1]
+            trimmed = " ".join(words)
+            results = _raw_search(trimmed)
+            if results:
+                return results
+        else:
+            break
+
+    # 3. As a final attempt, just the first 2 words (often the unique part of the name)
+    if len(query.split()) > 2:
+        first_two = " ".join(query.split()[:2])
+        results = _raw_search(first_two)
+        if results:
+            return results
+
+    return []
 
 
 def get_course(course_id: int) -> Optional[dict]:
