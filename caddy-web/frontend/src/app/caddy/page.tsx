@@ -30,6 +30,7 @@ export default function CaddyPage() {
   const audioChunksRef = useRef<Blob[]>([]);
   const audioElementRef = useRef<HTMLAudioElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   // Initial load — auth check first, then history independently so a history
   // error doesn't kick you back to login.
@@ -69,6 +70,14 @@ export default function CaddyPage() {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [messages, transcribing, sending]);
+
+  // Auto-resize textarea as user types — grows up to ~6 lines, then scrolls
+  useEffect(() => {
+    const ta = textareaRef.current;
+    if (!ta) return;
+    ta.style.height = "auto";
+    ta.style.height = `${Math.min(ta.scrollHeight, 160)}px`;
+  }, [input]);
 
   async function speakText(text: string) {
     if (muted) return;
@@ -337,6 +346,7 @@ export default function CaddyPage() {
                 </div>
               ) : (
                 <textarea
+                  ref={textareaRef}
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={(e) => {
@@ -348,8 +358,8 @@ export default function CaddyPage() {
                   placeholder="Talk to Caddy..."
                   disabled={transcribing}
                   rows={1}
-                  className="w-full bg-transparent text-[15px] text-ink placeholder:text-muted/60 focus:outline-none resize-none max-h-[120px]"
-                  style={{ minHeight: "22px" }}
+                  className="w-full bg-transparent text-[15px] text-ink placeholder:text-muted/60 focus:outline-none resize-none overflow-y-auto block"
+                  style={{ minHeight: "22px", maxHeight: "160px" }}
                 />
               )}
             </div>
