@@ -721,10 +721,16 @@ async def caddy_photo(
 
     extracted = extract_scorecard_from_image(image_bytes, content_type)
 
-    # Not a recognizable scorecard — treat the optional text as a regular message
+    # Not a recognizable scorecard — return a direct error, don't pollute conversation history
     if not extracted:
-        fallback = message or "I shared a photo"
-        return process_user_message(user, fallback, lat=lat, lng=lng)
+        round_state = load_round_state(user["id"])
+        return {
+            "reply": "Couldn't read a scorecard from that photo. Try laying the card flat with even lighting and shoot straight down, or just tell me the course name and I'll look it up.",
+            "user_message": message or "📷 Photo",
+            "round_state": round_state,
+            "weather": None,
+            "events": [],
+        }
 
     course_name = extracted["course_name"]
     city = extracted.get("city") or ""
