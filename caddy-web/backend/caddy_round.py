@@ -8,10 +8,70 @@ per-request state (loaded from DB) rather than module-level globals.
 import json
 import os
 import re
+from pathlib import Path
 from typing import Optional
 
 import requests
 import anthropic
+
+# ────────────────────────────────────────────────────────────
+# Course overrides — augment API data with hole nicknames,
+# corrected yardages, and hazard notes for specific courses.
+# Files live in course_overrides/*.json and are loaded once at import.
+# ────────────────────────────────────────────────────────────
+_OVERRIDES_DIR = Path(__file__).parent / "course_overrides"
+_COURSE_OVERRIDES: list = []
+
+
+def _load_overrides():
+    if not _OVERRIDES_DIR.exists():
+        return
+    for f in _OVERRIDES_DIR.glob("*.json"):
+        try:
+            with open(f) as fh:
+                _COURSE_OVERRIDES.append(json.load(fh))
+        except Exception as e:
+            print(f"Failed to load override {f.name}: {e}")
+
+
+_load_overrides()
+
+
+def _find_override_for(course: dict) -> Optional[dict]:
+    """Find an override that matches this course (by API id or name substring)."""
+    course_id = course.get("id")
+    course_name = (course.get("club_name") or "").lower()
+    for ov in _COURSE_OVERRIDES:
+        match = ov.get("course_match") or {}
+        if match.get("api_id") and match["api_id"] == course_id:
+            return ov
+        name_contains = (match.get("name_contains") or "").lower()
+        if name_contains and name_contains in course_name:
+            return ov
+    return None
+
+
+def _apply_overrides_to_course(course: dict) -> dict:
+    """Mutate the course dict in place with override data (nicknames, yardage fixes)."""
+    ov = _find_override_for(course)
+    if not ov:
+        return course
+    course["_override_notes"] = ov.get("course_notes")
+    hole_overrides = {h.get("hole"): h for h in ov.get("holes") or []}
+    for tee in (course.get("tees", {}).get("male") or []) + (course.get("tees", {}).get("female") or []):
+        tee_name = (tee.get("tee_name") or "").upper()
+        for i, hole in enumerate(tee.get("holes") or [], 1):
+            override = hole_overrides.get(i)
+            if not override:
+                continue
+            if override.get("nickname"):
+                hole["nickname"] = override["nickname"]
+            if override.get("notes"):
+                hole["notes"] = override["notes"]
+            yardage_overrides = override.get("yardage_overrides") or {}
+            if tee_name in yardage_overrides:
+                hole["yardage"] = yardage_overrides[tee_name]
+    return course
 
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 GOLF_COURSE_API_KEY = os.environ.get("GOLF_COURSE_API_KEY")
@@ -133,21 +193,31 @@ def get_course(course_id: int) -> Optional[dict]:
         if r.status_code != 200:
             return None
         data = r.json()
-        return data.get("course", data)
+        course = data.get("course", data)
+        # Apply any local overrides (nicknames, yardage corrections, notes)
+        return _apply_overrides_to_course(course)
     except Exception:
         return None
 
 
 def find_tee(course: dict, tee_color: Optional[str] = None) -> Optional[dict]:
-    """Find a male tee matching the color, or fall back to a sensible default
-    (second-longest, since the longest tees are usually championship/tips)."""
+    """Find a male tee matching the color, or fall back to a sensible default."""
     male_tees = course.get("tees", {}).get("male", [])
     if not male_tees:
         return None
     if tee_color:
-        # Match by name containing the color (handles 'BLUE', 'WHITE/BLUE', etc.)
+        color = tee_color.lower().strip()
+        # 1. Exact match (e.g. 'WHITE' matches 'WHITE', not 'WHITE/BLUE')
         for tee in male_tees:
-            if tee_color.lower() in tee["tee_name"].lower():
+            if tee["tee_name"].lower() == color:
+                return tee
+        # 2. Tee name STARTS with the color word
+        for tee in male_tees:
+            if tee["tee_name"].lower().startswith(color):
+                return tee
+        # 3. Loose substring match (handles combo tees like 'WHITE/BLUE')
+        for tee in male_tees:
+            if color in tee["tee_name"].lower():
                 return tee
     # Default: sort by total yards descending, pick the SECOND longest
     # (longest tees are usually 'tips' / championship; most amateurs play one back)
@@ -372,13 +442,21 @@ def format_course_context(round_state: dict) -> str:
     lines = [
         f"\n=== ACTIVE COURSE: {club_name} ===",
         f"Tee: {tee['tee_name']} | Rating: {tee.get('course_rating')} | Slope: {tee.get('slope_rating')} | Total: {tee.get('total_yards')} yards",
-        "",
-        "Hole-by-hole yardages:",
     ]
+    if course.get("_override_notes"):
+        lines.append(f"Course notes: {course['_override_notes']}")
+    lines.append("")
+    lines.append("Hole-by-hole yardages:")
     for i, hole in enumerate(tee.get("holes", []), 1):
-        lines.append(
-            f"  Hole {i}: Par {hole.get('par')}, {hole.get('yardage')} yards (HCP {hole.get('handicap')})"
-        )
+        nickname = hole.get("nickname")
+        nick_str = f' ("{nickname}")' if nickname else ""
+        line = f"  Hole {i}{nick_str}: Par {hole.get('par')}, {hole.get('yardage')} yards (HCP {hole.get('handicap')})"
+        if hole.get("notes"):
+            line += f" — {hole['notes']}"
+        lines.append(line)
+    if any(h.get("nickname") for h in tee.get("holes", [])):
+        lines.append("")
+        lines.append("This course has nicknames for each hole. Use them naturally when referring to holes (e.g. 'You're on Eternity now, the par 5 at the end of the front nine').")
     return "\n".join(lines)
 
 

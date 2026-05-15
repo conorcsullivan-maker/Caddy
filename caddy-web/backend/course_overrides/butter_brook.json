@@ -1,0 +1,27 @@
+{
+  "course_match": { "name_contains": "Butter Brook" },
+  "course_notes": "Butter Brook Golf Club, Westford MA. Public course, 18 holes. Each hole has a unique nickname.",
+  "holes": [
+    { "hole": 1,  "nickname": "Squeeze" },
+    { "hole": 2,  "nickname": "Dare" },
+    { "hole": 3,  "nickname": "Shelf",
+      "yardage_overrides": { "BLACK": 210, "BLUE": 175, "WHITE": 130, "WHITE/BLUE": 152, "SENIOR": 110 } },
+    { "hole": 4,  "nickname": "Faith" },
+    { "hole": 5,  "nickname": "Ledge" },
+    { "hole": 6,  "nickname": "Kick" },
+    { "hole": 7,  "nickname": "Party Bowl" },
+    { "hole": 8,  "nickname": "Northern Palm" },
+    { "hole": 9,  "nickname": "Eternity" },
+    { "hole": 10, "nickname": "Corral" },
+    { "hole": 11, "nickname": "Swale" },
+    { "hole": 12, "nickname": "Freedom" },
+    { "hole": 13, "nickname": "Barn",
+      "yardage_overrides": { "BLACK": 355 } },
+    { "hole": 14, "nickname": "Oasis" },
+    { "hole": 15, "nickname": "Old Tom" },
+    { "hole": 16, "nickname": "Highlands",
+      "yardage_overrides": { "BLACK": 524 } },
+    { "hole": 17, "nickname": "Butter Brook" },
+    { "hole": 18, "nickname": "Ancient Oak" }
+  ]
+}
