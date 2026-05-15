@@ -20,7 +20,8 @@ import anthropic
 # Files live in course_overrides/*.json and are loaded once at import.
 # ────────────────────────────────────────────────────────────
 _OVERRIDES_DIR = Path(__file__).parent / "course_overrides"
-_COURSE_OVERRIDES: list = []
+_COURSE_OVERRIDES: list = []   # patch-style: add nicknames/notes/yardages to API courses
+_SYNTHETIC_COURSES: list = []  # full scorecard: used when course isn't in the Golf Course API
 
 
 def _load_overrides():
@@ -29,12 +30,81 @@ def _load_overrides():
     for f in _OVERRIDES_DIR.glob("*.json"):
         try:
             with open(f) as fh:
-                _COURSE_OVERRIDES.append(json.load(fh))
+                data = json.load(fh)
+            if data.get("synthetic"):
+                _SYNTHETIC_COURSES.append(data)
+            else:
+                _COURSE_OVERRIDES.append(data)
         except Exception as e:
             print(f"Failed to load override {f.name}: {e}")
 
 
 _load_overrides()
+
+
+def find_synthetic_course(name: str) -> Optional[dict]:
+    """Return the synthetic override whose name_contains matches, or None."""
+    name_lower = name.lower().strip()
+    for syn in _SYNTHETIC_COURSES:
+        needle = (syn.get("course_match") or {}).get("name_contains", "").lower()
+        if needle and (needle in name_lower or name_lower in needle):
+            return syn
+    return None
+
+
+def build_course_from_synthetic(syn: dict) -> dict:
+    """Build a course dict matching Golf Course API shape from a synthetic override."""
+    male_tees = []
+    for td in syn.get("tees") or []:
+        holes = [
+            {
+                "par": h.get("par"),
+                "yardage": h.get("yardage"),
+                "handicap": h.get("handicap"),
+            }
+            for h in td.get("holes") or []
+        ]
+        male_tees.append({
+            "tee_name": (td.get("tee_name") or "WHITE").upper(),
+            "course_rating": td.get("course_rating"),
+            "slope_rating": td.get("slope_rating"),
+            "total_yards": td.get("total_yards") or sum(h.get("yardage") or 0 for h in holes),
+            "holes": holes,
+        })
+    course_name = syn.get("course_name") or (syn.get("course_match") or {}).get("name_contains", "Unknown Course")
+    return {
+        "id": None,
+        "club_name": course_name,
+        "location": syn.get("location"),
+        "_synthetic": True,
+        "_override_notes": syn.get("course_notes"),
+        "tees": {"male": male_tees, "female": []},
+    }
+
+
+def save_synthetic_course(extracted: dict) -> dict:
+    """Persist extracted scorecard data as a synthetic course override JSON and cache in memory."""
+    course_name = extracted.get("course_name", "unknown_course")
+    slug = re.sub(r"[^a-z0-9]+", "_", course_name.lower()).strip("_")
+    _OVERRIDES_DIR.mkdir(exist_ok=True)
+    filepath = _OVERRIDES_DIR / f"{slug}.json"
+
+    city = extracted.get("city") or ""
+    state = extracted.get("state") or ""
+    location = f"{city}, {state}".strip(", ") if city or state else ""
+
+    override = {
+        "synthetic": True,
+        "course_match": {"name_contains": course_name},
+        "course_name": course_name,
+        "location": location,
+        "course_notes": f"Scorecard uploaded by player",
+        "tees": extracted.get("tees") or [],
+    }
+    with open(filepath, "w") as f:
+        json.dump(override, f, indent=2)
+    _SYNTHETIC_COURSES.append(override)
+    return override
 
 
 def _find_override_for(course: dict) -> Optional[dict]:

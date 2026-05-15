@@ -216,6 +216,31 @@ export const api = {
         weather?: WeatherSnapshot | null;
       }>;
     },
+    photo: async (image: File, message?: string, location?: { lat: number; lng: number } | null) => {
+      const form = new FormData();
+      form.append("image", image);
+      if (message) form.append("message", message);
+      const params = new URLSearchParams();
+      if (location) {
+        params.set("lat", String(location.lat));
+        params.set("lng", String(location.lng));
+      }
+      const url = params.size > 0
+        ? `${API_BASE}/api/caddy/photo?${params.toString()}`
+        : `${API_BASE}/api/caddy/photo`;
+      const res = await fetch(url, { method: "POST", credentials: "include", body: form });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.detail || `Request failed (${res.status})`);
+      }
+      return res.json() as Promise<{
+        reply: string;
+        user_message: string;
+        round_state: RoundState;
+        events: ChatEvent[];
+        weather?: WeatherSnapshot | null;
+      }>;
+    },
     conversations: () =>
       request<{ conversations: ArchivedConversation[] }>("/api/caddy/conversations"),
     conversation: (id: number) =>

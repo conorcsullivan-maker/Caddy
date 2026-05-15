@@ -12,7 +12,7 @@ from typing import Optional
 from contextlib import contextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request, Response, Cookie, Depends, UploadFile, File
+from fastapi import FastAPI, Form, HTTPException, Request, Response, Cookie, Depends, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, Response as FastAPIResponse
 from pydantic import BaseModel, Field
@@ -21,11 +21,13 @@ from dotenv import load_dotenv
 # In production, env vars are injected by the host (Render), so missing .env is fine.
 load_dotenv(Path(__file__).parent.parent.parent / ".env", override=True)
 
-from caddy_engine import caddy_reply, transcribe_audio, synthesize_speech, anthropic_client, build_system_prompt
+from caddy_engine import caddy_reply, extract_scorecard_from_image, transcribe_audio, synthesize_speech, anthropic_client, build_system_prompt
 from caddy_round import (
     detect_and_load_course, detect_and_update_tee, detect_and_log_score,
     apply_score_to_round_state, infer_drive_distance, is_end_of_round,
     calculate_handicap, format_course_context, format_score_context,
+    find_synthetic_course, build_course_from_synthetic, save_synthetic_course,
+    find_tee, search_course, get_course,
 )
 from caddy_weather import fetch_weather, format_weather_context, has_critical_alert
 
@@ -699,6 +701,94 @@ async def caddy_voice(
         raise HTTPException(400, "Could not understand audio")
     result = process_user_message(user, transcript, lat=lat, lng=lng)
     return {"transcript": transcript, **result}
+
+
+@app.post("/api/caddy/photo")
+async def caddy_photo(
+    image: UploadFile = File(...),
+    message: Optional[str] = Form(None),
+    lat: Optional[float] = None,
+    lng: Optional[float] = None,
+    user: dict = Depends(get_current_user),
+):
+    """Scorecard photo → Claude vision extraction → course load + caddy reply."""
+    content_type = image.content_type or "image/jpeg"
+    if not content_type.startswith("image/"):
+        raise HTTPException(400, "File must be an image")
+    image_bytes = await image.read()
+    if len(image_bytes) > 10 * 1024 * 1024:
+        raise HTTPException(400, "Image too large (max 10MB)")
+
+    extracted = extract_scorecard_from_image(image_bytes, content_type)
+
+    # Not a recognizable scorecard — treat the optional text as a regular message
+    if not extracted:
+        fallback = message or "I shared a photo"
+        return process_user_message(user, fallback, lat=lat, lng=lng)
+
+    course_name = extracted["course_name"]
+    city = extracted.get("city") or ""
+    state = extracted.get("state") or ""
+    loc_str = f" in {city}, {state}".rstrip(", ") if city else ""
+
+    history = load_conversation(user["id"])
+    round_state = load_round_state(user["id"])
+    events = []
+    weather = None
+    if lat is not None and lng is not None:
+        weather = fetch_weather(lat, lng)
+
+    # Only load a course if one isn't already active
+    if not round_state.get("course"):
+        courses = search_course(course_name)
+        if courses:
+            course_data = get_course(courses[0]["id"])
+            tee = find_tee(course_data) if course_data else None
+        else:
+            syn = find_synthetic_course(course_name) or save_synthetic_course(extracted)
+            course_data = build_course_from_synthetic(syn)
+            tee = find_tee(course_data)
+
+        if course_data and tee:
+            round_state["course"] = course_data
+            round_state["tee"] = tee
+            round_state["started_at"] = round_state.get("started_at") or now_iso()
+            events.append({
+                "type": "course_loaded",
+                "course_name": course_data.get("club_name"),
+                "tee_name": tee.get("tee_name"),
+            })
+
+    tee_name = (round_state.get("tee") or {}).get("tee_name", "WHITE")
+    club_name = (round_state.get("course") or {}).get("club_name", course_name)
+
+    # Internal prompt to Caddy — not shown in history verbatim, but the user bubble shows a clean label
+    caddy_prompt = (
+        f"The player just uploaded their scorecard. Course loaded: {club_name}{loc_str}, "
+        f"{tee_name} tees. Confirm you have the course and you're ready to caddy. "
+        "Keep it to one or two sentences — you're on the first tee."
+    )
+    if message:
+        caddy_prompt += f' Player also said: "{message}"'
+
+    course_ctx = format_course_context(round_state)
+    score_ctx = format_score_context(round_state)
+    weather_ctx = format_weather_context(weather) if weather else ""
+    reply = caddy_reply(user, history, caddy_prompt, round_context=course_ctx + score_ctx + weather_ctx)
+
+    user_message = message or f"[Scorecard: {club_name}]"
+    history.append({"role": "user", "content": user_message})
+    history.append({"role": "assistant", "content": reply})
+    save_conversation(user["id"], history)
+    save_round_state(user["id"], round_state)
+
+    return {
+        "reply": reply,
+        "user_message": user_message,
+        "round_state": round_state,
+        "weather": weather,
+        "events": events,
+    }
 
 
 @app.get("/api/caddy/conversations")

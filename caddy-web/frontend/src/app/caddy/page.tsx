@@ -26,11 +26,15 @@ export default function CaddyPage() {
   const [weather, setWeather] = useState<WeatherSnapshot | null>(null);
   const [locationStatus, setLocationStatus] = useState<"idle" | "asking" | "granted" | "denied">("idle");
 
+  const [photoFile, setPhotoFile] = useState<File | null>(null);
+  const [photoPreview, setPhotoPreview] = useState<string | null>(null);
+
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const audioElementRef = useRef<HTMLAudioElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   // Initial load — auth check first, then history independently so a history
   // error doesn't kick you back to login.
@@ -203,6 +207,48 @@ export default function CaddyPage() {
     else startRecording();
   }
 
+  function clearPhoto() {
+    if (photoPreview) URL.revokeObjectURL(photoPreview);
+    setPhotoFile(null);
+    setPhotoPreview(null);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  }
+
+  function handlePhotoSelect(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (photoPreview) URL.revokeObjectURL(photoPreview);
+    setPhotoFile(file);
+    setPhotoPreview(URL.createObjectURL(file));
+  }
+
+  async function handleSendPhoto() {
+    if (!photoFile || sending) return;
+    const file = photoFile;
+    const text = input.trim();
+    const preview = photoPreview;
+    clearPhoto();
+    setInput("");
+    setMessages((m) => [...m, { role: "user", content: text || "📷 Scorecard" }]);
+    setSending(true);
+    setError(null);
+    try {
+      const { reply, round_state, weather: w } = await api.caddy.photo(file, text || undefined, location);
+      setMessages((m) => [...m, { role: "assistant", content: reply }]);
+      if (round_state) setRoundState(round_state);
+      if (w) setWeather(w);
+      speakText(reply);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Photo upload failed");
+      setMessages((m) => m.slice(0, -1));
+      // Restore photo so user can retry
+      setPhotoFile(file);
+      setPhotoPreview(preview);
+    } finally {
+      setSending(false);
+    }
+  }
+
   async function handleReset() {
     if (!confirm("Start a new conversation? This one gets archived to your past conversations — nothing is lost.")) return;
     await api.caddy.reset();
@@ -322,8 +368,26 @@ export default function CaddyPage() {
               {error}
             </p>
           )}
-          <form onSubmit={handleSendText} className="flex items-end gap-2">
-            {/* Mute toggle — left side, away from the mic to prevent accidental taps */}
+          {/* Photo preview */}
+          {photoPreview && (
+            <div className="flex items-center gap-2 mb-2">
+              <div className="relative">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={photoPreview} alt="Scorecard" className="h-16 w-auto rounded-lg object-cover border border-line" />
+                <button
+                  type="button"
+                  onClick={clearPhoto}
+                  className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-ink text-cream text-[11px] flex items-center justify-center"
+                  aria-label="Remove photo"
+                >
+                  ✕
+                </button>
+              </div>
+              <span className="text-[12px] text-muted">Scorecard photo — add a note or tap send</span>
+            </div>
+          )}
+          <form onSubmit={photoFile ? (e) => { e.preventDefault(); handleSendPhoto(); } : handleSendText} className="flex items-end gap-2">
+            {/* Mute toggle */}
             <button
               type="button"
               onClick={() => setMuted(!muted)}
@@ -332,6 +396,27 @@ export default function CaddyPage() {
               aria-label={muted ? "Unmute" : "Mute"}
             >
               {muted ? <SpeakerMutedIcon /> : <SpeakerIcon />}
+            </button>
+
+            {/* Hidden file input */}
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              capture="environment"
+              className="hidden"
+              onChange={handlePhotoSelect}
+            />
+            {/* Camera button */}
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={sending || transcribing}
+              className="flex-shrink-0 w-9 h-9 mb-1.5 rounded-full text-muted hover:text-forest hover:bg-cream/60 flex items-center justify-center transition disabled:opacity-40"
+              title="Upload scorecard photo"
+              aria-label="Upload scorecard"
+            >
+              <CameraIcon />
             </button>
 
             <div className={`flex-1 border rounded-3xl px-4 py-3 transition ${
@@ -352,10 +437,10 @@ export default function CaddyPage() {
                   onKeyDown={(e) => {
                     if (e.key === "Enter" && !e.shiftKey) {
                       e.preventDefault();
-                      handleSendText();
+                      photoFile ? handleSendPhoto() : handleSendText();
                     }
                   }}
-                  placeholder="Talk to Caddy..."
+                  placeholder={photoFile ? "Add a note (optional)..." : "Talk to Caddy..."}
                   disabled={transcribing}
                   rows={1}
                   className="w-full bg-transparent text-[15px] text-ink placeholder:text-muted/60 focus:outline-none resize-none overflow-y-auto block"
@@ -363,7 +448,7 @@ export default function CaddyPage() {
                 />
               )}
             </div>
-            {input.trim() ? (
+            {(input.trim() || photoFile) ? (
               <button
                 type="submit"
                 disabled={sending}
@@ -520,6 +605,15 @@ function SpeakerIcon() {
       <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
       <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
       <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
+    </svg>
+  );
+}
+
+function CameraIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
+      <circle cx="12" cy="13" r="4" />
     </svg>
   );
 }

@@ -2,8 +2,13 @@
 Caddy intelligence layer — system prompts, Claude reasoning, voice in/out.
 Shared by all clients (web for now, native later).
 """
+import base64
 import io
+import json
 import os
+import re
+from typing import Optional
+
 import anthropic
 from openai import OpenAI
 
@@ -137,6 +142,76 @@ Iron miss: {iron_miss}
 {rounds_str}
 """
     return BASE_PROMPT + profile_section
+
+
+def _extract_json(text: str):
+    """Strip markdown code fences and parse JSON. Returns None on failure."""
+    if not text:
+        return None
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        first_nl = cleaned.find("\n")
+        if first_nl != -1:
+            cleaned = cleaned[first_nl + 1:]
+        if cleaned.rstrip().endswith("```"):
+            cleaned = cleaned.rstrip()[:-3]
+    cleaned = cleaned.strip()
+    if not (cleaned.startswith("{") or cleaned.startswith("[")):
+        match = re.search(r"[\{\[].*[\}\]]", cleaned, re.DOTALL)
+        if match:
+            cleaned = match.group(0)
+    try:
+        return json.loads(cleaned)
+    except Exception:
+        return None
+
+
+def extract_scorecard_from_image(image_bytes: bytes, media_type: str = "image/jpeg") -> Optional[dict]:
+    """Use Claude vision to extract course and hole data from a scorecard photo.
+    Returns structured dict or None if this isn't a recognizable scorecard."""
+    b64 = base64.b64encode(image_bytes).decode()
+    response = anthropic_client.messages.create(
+        model="claude-opus-4-7",
+        max_tokens=2000,
+        messages=[{
+            "role": "user",
+            "content": [
+                {
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": media_type, "data": b64},
+                },
+                {
+                    "type": "text",
+                    "text": (
+                        "Look at this image. If it is a golf scorecard, extract the data and return ONLY valid JSON:\n"
+                        '{\n'
+                        '  "course_name": "Full course name as printed on the scorecard",\n'
+                        '  "city": "City or null",\n'
+                        '  "state": "State abbreviation or null",\n'
+                        '  "tees": [\n'
+                        '    {\n'
+                        '      "tee_name": "COLOR in ALL CAPS (e.g. BLACK, BLUE, WHITE, RED)",\n'
+                        '      "course_rating": 71.2,\n'
+                        '      "slope_rating": 128,\n'
+                        '      "total_yards": 6400,\n'
+                        '      "holes": [\n'
+                        '        {"hole": 1, "par": 4, "yardage": 385, "handicap": 7},\n'
+                        '        ... all 18 holes ...\n'
+                        '      ]\n'
+                        '    }\n'
+                        '  ]\n'
+                        '}\n'
+                        "Include every tee color visible on the scorecard. Use null for fields not shown.\n"
+                        'If this is NOT a golf scorecard, return {"error": "not a scorecard"}.'
+                    ),
+                },
+            ],
+        }],
+    )
+    data = _extract_json(response.content[0].text)
+    if not data or data.get("error") or not data.get("course_name") or not data.get("tees"):
+        return None
+    return data
 
 
 def caddy_reply(user: dict, conversation_history: list[dict], new_message: str,
