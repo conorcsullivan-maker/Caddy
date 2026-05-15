@@ -654,14 +654,14 @@ def process_user_message(user: dict, message: str,
         # Player responded to a course load without rejecting — treat as implicit confirmation.
         round_state["course_confirmed"] = True
 
-    # Score logging hint — pre-compute the running total so Claude doesn't do arithmetic.
-    # Without this, Claude has been mistaking "par on this hole" for "even par overall."
+    # Score logging hint — react to the hole, don't recap the running total.
+    # The scorecard above already has the running total for when the player asks.
     if score_just_logged:
-        _result_label = {-2: "eagle", -1: "birdie", 0: "par", 1: "bogey", 2: "double bogey"}.get(
-            (score_just_logged.get("score") or 0) - (score_just_logged.get("par") or 0),
-            f"{score_just_logged.get('score')}"
-        )
-        _status_str = compute_round_status(round_state) or f"{score_just_logged.get('score')} strokes through 1 hole"
+        _diff = (score_just_logged.get("score") or 0) - (score_just_logged.get("par") or 0)
+        _result_label = {
+            -3: "albatross", -2: "eagle", -1: "birdie", 0: "par",
+            1: "bogey", 2: "double bogey", 3: "triple bogey", 4: "quad",
+        }.get(_diff, f"{score_just_logged.get('score')}")
         # Detect any holes that got skipped — Caddy should ask about them casually.
         _scores = round_state.get("hole_scores") or []
         _max_logged = max((i + 1 for i, s in enumerate(_scores) if s is not None), default=0)
@@ -670,14 +670,16 @@ def process_user_message(user: dict, message: str,
         if _missing:
             _missing_str = ", ".join(str(h) for h in _missing)
             _missing_hint = (
-                f" Also: hole(s) {_missing_str} still don't have a score logged. After acknowledging this one, "
+                f" Also: hole(s) {_missing_str} still don't have a score logged. After your reaction, "
                 f"casually ask what they made on the missing hole(s) — one short sentence, conversational, like "
-                f"'btw, what'd you make on {_missing[0]}? Never logged it.' Keep playing either way."
+                f"'btw, what'd you make on {_missing[0]}? Never logged it.'"
             )
         round_context += (
             f"\n\nNOTE: Player just reported {score_just_logged.get('score')} on hole {score_just_logged.get('hole')} "
-            f"({_result_label}). Round status is now: {_status_str}. "
-            f"Acknowledge in one short sentence using this exact status — do not recompute.{_missing_hint}"
+            f"— a {_result_label}. React briefly to THIS hole only, like a caddy walking next to them: "
+            f"'Nice par.' / 'Great birdie.' / 'Eagle — clutch.' / 'Tough one, onto the next.' / "
+            f"'Shake it off.' Match tone to the result. Do NOT recite the running total or score-vs-par "
+            f"unless the player explicitly asks. Save the running totals for when they ask.{_missing_hint}"
         )
 
     # 6. Get Claude's reply
