@@ -306,9 +306,15 @@ END_ROUND_PHRASES = [
 ]
 
 SCORE_TRIGGER_KEYWORDS = [
-    "birdie", "eagle", "bogey", "double", "triple", "par",
-    "made par", "got par", "i shot", "i made", "i got a",
-    "hole in one", "ace",
+    # Standard relative-to-par terms
+    "birdie", "eagle", "albatross", "double eagle", "bogey",
+    "double", "triple", "quadruple", "quad", "snowman", "par",
+    "ace", "hole in one", "hole-in-one",
+    # Common score-reporting verbs
+    "i shot", "i made", "i got", "i had", "i took", "i carded",
+    "made par", "got par", "shot par", "carded", "posted",
+    # Relative-to-par numeric phrasing
+    "over", "under", "over par", "under par",
 ]
 
 COURSE_MENTION_KEYWORDS = ["at ", "playing", "arrived", "tee off", "course", "club", "we're at", "im at", "i'm at"]
@@ -509,7 +515,10 @@ def detect_and_log_score(text: str, round_state: dict) -> Optional[dict]:
 
     text_lower = text.lower()
     # Strict single-word filter: only golf-specific words allowed alone (no "par")
-    safe_singles = {"birdie", "eagle", "bogey", "ace", "hole-in-one"}
+    safe_singles = {
+        "birdie", "eagle", "albatross", "bogey", "ace",
+        "hole-in-one", "snowman", "quad", "quadruple",
+    }
     words = [w.lower().strip(".,!?") for w in text.split()]
     is_safe_single = any(w in safe_singles for w in words)
 
@@ -517,8 +526,21 @@ def detect_and_log_score(text: str, round_state: dict) -> Optional[dict]:
     matches_a_number = any(f"a {n}" in text_lower for n in
                             ["two", "three", "four", "five", "six", "seven", "eight", "nine",
                              "2", "3", "4", "5", "6", "7", "8", "9"])
+    # "+2", "-1", "1 over", "two under par", etc.
+    matches_relative_number = bool(
+        re.search(r"[+\-]\d", text_lower)
+        or re.search(r"\b\d+\s*(over|under)\b", text_lower)
+        or re.search(r"\b(one|two|three|four|five|six|seven)\s+(over|under)\b", text_lower)
+    )
+    # "shot 5" / "made 4" / "took 6" — score verb directly followed by a number
+    matches_verb_number = bool(re.search(
+        r"\b(shot|made|carded|took|posted|scored|had)\s+(a\s+)?"
+        r"(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b",
+        text_lower,
+    ))
 
-    if not (is_safe_single or matches_keyword or matches_a_number):
+    if not (is_safe_single or matches_keyword or matches_a_number
+            or matches_relative_number or matches_verb_number):
         return None
 
     current_hole = round_state.get("current_hole", 1)
@@ -539,13 +561,26 @@ def detect_and_log_score(text: str, round_state: dict) -> Optional[dict]:
         max_tokens=80,
         messages=[{"role": "user", "content": (
             f'Golfer said: "{text}"\n{par_info}\n\n'
-            'Is the player reporting their score for a hole? '
-            'Return JSON only: {"score": integer_or_null, "hole": integer_or_null}\n'
-            'If the player names a specific hole (e.g. "on the fifth", "hole 4", "the par 3"), '
-            'use that hole. Otherwise assume the current hole.\n'
-            'Relative terms: birdie=par-1, eagle=par-2, bogey=par+1, double=par+2, triple=par+3, '
-            'hole in one=1. Always compute against the par of the HOLE BEING REPORTED — not the current hole.\n'
-            'If not a score report return {"score": null, "hole": null}'
+            'Is the player reporting their score for a hole?\n'
+            'Return JSON only: {"score": integer_or_null, "hole": integer_or_null}\n\n'
+            'HOLE: If the player names a specific hole ("on the fifth", "hole 4", "the par 3"), '
+            'use that hole. Otherwise assume the current hole.\n\n'
+            'SCORE — translate all common golf jargon. Always compute against the par of the HOLE BEING REPORTED:\n'
+            '  Absolute numbers ("a 5", "shot 4", "took 6", "carded 5") → use the literal number.\n'
+            '  Relative-to-par terms:\n'
+            '    ace / hole in one = 1\n'
+            '    albatross / double eagle = par - 3\n'
+            '    eagle = par - 2\n'
+            '    birdie = par - 1\n'
+            '    par / made par / got par = par\n'
+            '    bogey = par + 1\n'
+            '    double / double bogey = par + 2\n'
+            '    triple / triple bogey = par + 3\n'
+            '    quadruple / quad / quad bogey = par + 4\n'
+            '    snowman = 8 strokes (always 8, regardless of par)\n'
+            '    "N over" / "+N" / "N over par" = par + N\n'
+            '    "N under" / "-N" / "N under par" = par - N\n\n'
+            'If the message is not reporting a hole score, return {"score": null, "hole": null}.'
         )}],
     )
     data = _extract_json(response.content[0].text)
