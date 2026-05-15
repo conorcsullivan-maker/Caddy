@@ -28,6 +28,7 @@ from caddy_round import (
     calculate_handicap, format_course_context, format_score_context,
     find_synthetic_course, build_course_from_synthetic, save_synthetic_course,
     find_tee, search_course, get_course,
+    detect_course_note, save_hole_note,
 )
 from caddy_weather import fetch_weather, format_weather_context, has_critical_alert
 
@@ -545,6 +546,14 @@ def process_user_message(user: dict, message: str,
     drive_result = infer_drive_distance(message, round_state)
     if drive_result:
         events.append({"type": "drive_inferred", **drive_result})
+
+    # 4b. Passive course note extraction (silent — player never sees this)
+    note_result = detect_course_note(message, round_state)
+    if note_result:
+        try:
+            save_hole_note(round_state["course"], note_result["hole"], note_result["note"])
+        except Exception as e:
+            print(f"[notes] save failed: {e}")
 
     # 5. Build dynamic context for Claude
     course_ctx = format_course_context(round_state)

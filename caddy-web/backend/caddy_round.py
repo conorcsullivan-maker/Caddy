@@ -107,6 +107,95 @@ def save_synthetic_course(extracted: dict) -> dict:
     return override
 
 
+# ────────────────────────────────────────────────────────────
+# Crowdsourced hole notes
+# ────────────────────────────────────────────────────────────
+_HAZARD_KEYWORDS = [
+    "water", "bunker", "sand trap", "out of bounds", "ob ",
+    "tree", "trees", "rough", "hazard", "creek", "pond", "lake",
+    "river", "waste area", "ravine", "ditch", "marsh", "cliff",
+    "rocks", "railroad", "cart path",
+]
+
+
+def detect_course_note(text: str, round_state: dict) -> Optional[dict]:
+    """If the message contains course-specific intel for the current hole, extract it.
+    Returns {hole, note} or None. Runs a cheap Haiku call only when hazard keywords present."""
+    if not anthropic_client or not round_state.get("course"):
+        return None
+    if len(text.split()) < 5:
+        return None
+    text_lower = text.lower()
+    if not any(kw in text_lower for kw in _HAZARD_KEYWORDS):
+        return None
+
+    current_hole = round_state.get("current_hole", 1)
+    response = anthropic_client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=60,
+        messages=[{"role": "user", "content": (
+            f'Golfer on hole {current_hole} said: "{text}"\n'
+            'Does this describe a specific physical hazard or trouble area on this hole '
+            '(e.g. water location, bunker position, OB, carry distance to hazard)? '
+            'Return JSON only: {"note": "brief fact under 15 words"} or {"note": null}'
+        )}],
+    )
+    data = _extract_json(response.content[0].text)
+    if not data or not data.get("note"):
+        return None
+    return {"hole": current_hole, "note": data["note"]}
+
+
+def save_hole_note(course: dict, hole_num: int, note_text: str):
+    """Add a crowdsourced note to a hole. Confirms after 2 mentions. Saves to disk + updates cache."""
+    course_name = course.get("club_name", "unknown")
+    slug = re.sub(r"[^a-z0-9]+", "_", course_name.lower()).strip("_")
+    _OVERRIDES_DIR.mkdir(exist_ok=True)
+    filepath = _OVERRIDES_DIR / f"{slug}.json"
+
+    if filepath.exists():
+        with open(filepath) as f:
+            override = json.load(f)
+    else:
+        override = {
+            "synthetic": False,
+            "course_match": {"name_contains": course_name},
+            "holes": [],
+        }
+
+    holes = override.setdefault("holes", [])
+    hole_entry = next((h for h in holes if h.get("hole") == hole_num), None)
+    if not hole_entry:
+        hole_entry = {"hole": hole_num}
+        holes.append(hole_entry)
+
+    crowdsourced = hole_entry.setdefault("crowdsourced", [])
+    note_lower = note_text.lower().strip()
+    existing = next(
+        (n for n in crowdsourced if note_lower in n["text"].lower() or n["text"].lower() in note_lower),
+        None,
+    )
+    if existing:
+        existing["mentions"] = existing.get("mentions", 1) + 1
+        if existing["mentions"] >= 2:
+            existing["confirmed"] = True
+    else:
+        crowdsourced.append({"text": note_text, "mentions": 1, "confirmed": False})
+
+    with open(filepath, "w") as f:
+        json.dump(override, f, indent=2)
+
+    # Update in-memory cache
+    is_synthetic = override.get("synthetic", False)
+    target = _SYNTHETIC_COURSES if is_synthetic else _COURSE_OVERRIDES
+    name_key = course_name.lower()
+    for i, ov in enumerate(target):
+        if (ov.get("course_match") or {}).get("name_contains", "").lower() == name_key:
+            target[i] = override
+            return
+    target.append(override)
+
+
 def _find_override_for(course: dict) -> Optional[dict]:
     """Find an override that matches this course (by API id or name substring)."""
     course_id = course.get("id")
@@ -136,8 +225,14 @@ def _apply_overrides_to_course(course: dict) -> dict:
                 continue
             if override.get("nickname"):
                 hole["nickname"] = override["nickname"]
+            notes_parts = []
             if override.get("notes"):
-                hole["notes"] = override["notes"]
+                notes_parts.append(override["notes"])
+            confirmed = [n["text"] for n in (override.get("crowdsourced") or []) if n.get("confirmed")]
+            if confirmed:
+                notes_parts.append(". ".join(confirmed))
+            if notes_parts:
+                hole["notes"] = " ".join(notes_parts)
             yardage_overrides = override.get("yardage_overrides") or {}
             if tee_name in yardage_overrides:
                 hole["yardage"] = yardage_overrides[tee_name]
