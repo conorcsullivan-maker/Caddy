@@ -174,7 +174,7 @@ def extract_scorecard_from_image(image_bytes: bytes, media_type: str = "image/jp
         b64 = base64.b64encode(image_bytes).decode()
         response = anthropic_client.messages.create(
             model="claude-opus-4-7",
-            max_tokens=2000,
+            max_tokens=4096,
             messages=[{
                 "role": "user",
                 "content": [
@@ -213,10 +213,12 @@ def extract_scorecard_from_image(image_bytes: bytes, media_type: str = "image/jp
         raw = response.content[0].text
         print(f"[scorecard] Claude response: {raw[:500]}")
         data = _extract_json(raw)
-        if not data or data.get("error") or not data.get("course_name") or not data.get("tees"):
+        if not data or data.get("error") or not data.get("tees"):
             print(f"[scorecard] extraction failed — parsed: {data}")
             return None
-        print(f"[scorecard] extracted course: {data.get('course_name')}")
+        if not data.get("course_name"):
+            data["course_name"] = "Unknown Course"
+        print(f"[scorecard] extracted: {data.get('course_name')} — {len(data.get('tees', []))} tee(s)")
         return data
     except Exception as e:
         print(f"[scorecard] API error: {e}")
