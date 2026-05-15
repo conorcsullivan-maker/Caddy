@@ -550,15 +550,17 @@ def process_user_message(user: dict, message: str,
 
     # 2. Course detection (only if no course loaded). Returns either a loaded course,
     # a "not_found" signal so Caddy can offer alternatives, or None.
-    course_load = detect_and_load_course(message, round_state)
+    course_load = detect_and_load_course(message, round_state, player_lat=lat, player_lng=lng)
     course_loaded_now = False
     course_not_found_query: Optional[str] = None
+    course_load_distance: Optional[float] = None
     if course_load and course_load.get("status") == "loaded":
         round_state["course"] = course_load["course"]
         round_state["tee"] = course_load["tee"]
         round_state["started_at"] = round_state.get("started_at") or now_iso()
         round_state["course_confirmed"] = False
         course_loaded_now = True
+        course_load_distance = course_load.get("distance_miles")
         events.append({
             "type": "course_loaded",
             "course_name": course_load["course"].get("club_name"),
@@ -613,11 +615,26 @@ def process_user_message(user: dict, message: str,
         else:
             _loc = (_raw_loc or "").strip()
         _loc_str = f" in {_loc}" if _loc else ""
-        round_context += (
-            f"\n\nNOTE: Course just auto-loaded: {_course.get('club_name')}{_loc_str}. "
-            f"Acknowledge it casually in one short phrase (e.g. 'Got {_course.get('club_name')} loaded') "
-            f"and continue with whatever the player asked. Don't ask for confirmation or wait — keep moving."
-        )
+
+        # Trust level based on GPS distance: close = confident, far/unknown = sanity-check
+        if course_load_distance is not None and course_load_distance < 3:
+            _trust_note = (
+                f"GPS confirms you're within {course_load_distance:.1f} miles — high confidence this is the right course. "
+                f"Acknowledge casually in one short phrase (e.g. 'Got {_course.get('club_name')}{_loc_str} loaded') and keep moving."
+            )
+        elif course_load_distance is not None and course_load_distance > 50:
+            _trust_note = (
+                f"GPS shows the player is {course_load_distance:.0f} miles from this course — that's suspicious. "
+                f"Mention the city/state ({_loc or 'the location'}) and ask the player to confirm this is the right course — "
+                f"there may be another course with the same name closer to them."
+            )
+        else:
+            _trust_note = (
+                f"No GPS confirmation available. Mention the course AND the city/state in one short sentence "
+                f"(e.g. 'Got {_course.get('club_name')}{_loc_str} loaded — that the right one?') so they can correct if needed. "
+                f"Keep moving regardless — don't wait to be told yes."
+            )
+        round_context += f"\n\nNOTE: Course just auto-loaded: {_course.get('club_name')}{_loc_str}. {_trust_note}"
     elif course_not_found_query:
         # Course was mentioned but lookup failed — offer the two escape hatches casually.
         round_context += (

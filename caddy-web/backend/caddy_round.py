@@ -6,6 +6,7 @@ Ported from the Mac voice version (caddy_voice.py) and adapted to work with
 per-request state (loaded from DB) rather than module-level globals.
 """
 import json
+import math
 import os
 import re
 from pathlib import Path
@@ -13,6 +14,58 @@ from typing import Optional
 
 import requests
 import anthropic
+
+
+_ORDINAL_HOLE_NUMS = {
+    "first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5,
+    "sixth": 6, "seventh": 7, "eighth": 8, "ninth": 9, "tenth": 10,
+    "eleventh": 11, "twelfth": 12, "thirteenth": 13, "fourteenth": 14,
+    "fifteenth": 15, "sixteenth": 16, "seventeenth": 17, "eighteenth": 18,
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+    "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+    "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14,
+    "fifteen": 15, "sixteen": 16, "seventeen": 17, "eighteen": 18,
+    # Whisper homophones — common voice-transcription substitutions
+    "won": 1, "too": 2, "to": 2, "for": 4, "ate": 8,
+}
+
+
+def _extract_hole_number(text: str) -> Optional[int]:
+    """Find a hole number referenced in the message ('on 5', 'hole 4',
+    'the seventh', 'on too' for 'on two'). Returns None if nothing matches."""
+    t = text.lower()
+    # "on 5", "on hole 5", "hole 4", "on the 7th"
+    m = re.search(r"\b(?:on|hole)\s+(?:the\s+)?(\d{1,2})(?:st|nd|rd|th)?\b", t)
+    if m:
+        n = int(m.group(1))
+        if 1 <= n <= 18:
+            return n
+    # "on the fifth", "hole seven", "on two"
+    m = re.search(r"\b(?:on|hole|the)\s+(?:the\s+)?([a-z]+)\b", t)
+    if m and m.group(1) in _ORDINAL_HOLE_NUMS:
+        return _ORDINAL_HOLE_NUMS[m.group(1)]
+    return None
+
+
+def _haversine_miles(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    """Great-circle distance between two points in miles."""
+    r = 3958.8
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dp = math.radians(lat2 - lat1)
+    dl = math.radians(lng2 - lng1)
+    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 2 * r * math.asin(math.sqrt(a))
+
+
+def _course_lat_lng(course: dict) -> Optional[tuple[float, float]]:
+    loc = course.get("location") or {}
+    if not isinstance(loc, dict):
+        return None
+    lat = loc.get("latitude")
+    lng = loc.get("longitude")
+    if isinstance(lat, (int, float)) and isinstance(lng, (int, float)):
+        return (float(lat), float(lng))
+    return None
 
 # ────────────────────────────────────────────────────────────
 # Course overrides — augment API data with hole nicknames,
@@ -455,11 +508,18 @@ def detect_and_update_tee(text: str, round_state: dict) -> Optional[dict]:
     return new_tee
 
 
-def detect_and_load_course(text: str, current_round_state: dict) -> Optional[dict]:
+def detect_and_load_course(
+    text: str,
+    current_round_state: dict,
+    player_lat: Optional[float] = None,
+    player_lng: Optional[float] = None,
+) -> Optional[dict]:
     """Try to detect and load a course from natural language. Returns one of:
     - None: no course mention detected
-    - {"status": "loaded", "course": ..., "tee": ...}: course loaded successfully
+    - {"status": "loaded", "course": ..., "tee": ..., "distance_miles": float|None}
     - {"status": "not_found", "query": "..."}: course mentioned but not in API
+    When player_lat/lng are provided, multiple courses sharing a name are ranked
+    by proximity so we pick the actual one the player is at.
     """
     if current_round_state.get("course"):
         return None  # course already loaded, don't re-detect
@@ -480,18 +540,43 @@ def detect_and_load_course(text: str, current_round_state: dict) -> Optional[dic
     if result.lower() in ("none", "no", "") or len(result) < 4:
         return None
 
-    courses = search_course(result)
-    if not courses:
+    candidates = search_course(result)
+    if not candidates:
         return {"status": "not_found", "query": result}
-    course_data = get_course(courses[0]["id"])
+
+    # Pick the candidate closest to the player's GPS. Falls back to the first
+    # result when no location is available or the API doesn't have coordinates.
+    course_data: Optional[dict] = None
+    distance_miles: Optional[float] = None
+    if player_lat is not None and player_lng is not None:
+        best_distance = float("inf")
+        for c in candidates[:8]:  # limit lookups for speed
+            full = get_course(c["id"])
+            ll = _course_lat_lng(full) if full else None
+            if not ll:
+                continue
+            d = _haversine_miles(player_lat, player_lng, ll[0], ll[1])
+            if d < best_distance:
+                best_distance = d
+                course_data = full
+                distance_miles = d
+    if course_data is None:
+        # No GPS, or no candidate had usable coordinates — fall back to first match
+        course_data = get_course(candidates[0]["id"])
     if not course_data:
         return {"status": "not_found", "query": result}
+
     tee_color = extract_tee_color(text)
     tee = find_tee(course_data, tee_color)
     if not tee:
         return {"status": "not_found", "query": result}
 
-    return {"status": "loaded", "course": course_data, "tee": tee}
+    return {
+        "status": "loaded",
+        "course": course_data,
+        "tee": tee,
+        "distance_miles": distance_miles,
+    }
 
 
 # ────────────────────────────────────────────────────────────
@@ -542,6 +627,25 @@ def detect_and_log_score(text: str, round_state: dict) -> Optional[dict]:
     if not (is_safe_single or matches_keyword or matches_a_number
             or matches_relative_number or matches_verb_number):
         return None
+
+    # Fast path: truly unambiguous absolute terms. These ALWAYS map to a fixed
+    # stroke count regardless of par, so we can resolve them without trusting
+    # Haiku to do absolute arithmetic. The original snowman-on-a-par-5 bug
+    # came from Haiku interpreting "snowman" as par+4 instead of 8 strokes.
+    ABSOLUTE_TERMS = {
+        "snowman": 8,
+        "ace": 1,
+        "hole in one": 1,
+        "hole-in-one": 1,
+    }
+    for term, fixed_score in ABSOLUTE_TERMS.items():
+        if term in text_lower:
+            hole_num = _extract_hole_number(text) or round_state.get("current_hole", 1)
+            return {
+                "hole": hole_num,
+                "score": fixed_score,
+                "par": get_hole_par(round_state, hole_num),
+            }
 
     current_hole = round_state.get("current_hole", 1)
     # Give Haiku the par of every hole, not just current. Players reference holes
@@ -631,8 +735,9 @@ def compute_round_status(round_state: dict) -> Optional[str]:
     max_logged = max(logged_set)
     missing = [h for h in range(1, max_logged + 1) if h not in logged_set]
 
+    hole_word = "hole" if len(logged) == 1 else "holes"
     if not have_all_pars or par_total == 0:
-        base = f"{total} strokes across {len(logged)} holes"
+        base = f"{total} strokes across {len(logged)} {hole_word}"
     else:
         vs = total - par_total
         if vs == 0:
@@ -642,12 +747,13 @@ def compute_round_status(round_state: dict) -> Optional[str]:
         else:
             label = f"{abs(vs)}-under par"
         if missing:
-            base = f"{label} ({total} strokes across {len(logged)} holes)"
+            base = f"{label} across {len(logged)} {hole_word} logged"
         else:
-            base = f"{label} ({total} strokes through {len(logged)} holes)"
+            base = f"{label} through {max_logged} {hole_word}"
     if missing:
         missing_str = ", ".join(str(h) for h in missing)
-        base += f" — still need to log hole(s) {missing_str}"
+        miss_word = "hole" if len(missing) == 1 else "holes"
+        base += f" — still need to log {miss_word} {missing_str}"
     return base
 
 
