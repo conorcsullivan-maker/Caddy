@@ -547,14 +547,61 @@ def detect_and_log_score(text: str, round_state: dict) -> Optional[dict]:
 
 
 def apply_score_to_round_state(round_state: dict, hole: int, score: int) -> dict:
-    """Mutate round_state with new score and advance the current hole."""
+    """Mutate round_state with new score and advance the current hole.
+    Backfilling an earlier hole (e.g. logging hole 4 while on hole 6) does NOT
+    push the cursor forward — the cursor only moves when the new score is at
+    or past the current hole."""
     hole_scores = round_state.get("hole_scores") or []
     while len(hole_scores) < hole:
         hole_scores.append(None)
     hole_scores[hole - 1] = score
     round_state["hole_scores"] = hole_scores
-    round_state["current_hole"] = max(hole + 1, round_state.get("current_hole", 1) + 1)
+    current = round_state.get("current_hole", 1)
+    if hole >= current:
+        round_state["current_hole"] = hole + 1
     return round_state
+
+
+def compute_round_status(round_state: dict) -> Optional[str]:
+    """Return a natural-language round-status sentence, or None if no scores yet.
+    Handles gaps in the scorecard explicitly so Caddy never silently treats a
+    skipped hole as if it had been played."""
+    hole_scores = round_state.get("hole_scores") or []
+    logged = [(i + 1, s) for i, s in enumerate(hole_scores) if s is not None]
+    if not logged:
+        return None
+    par_total = 0
+    have_all_pars = True
+    total = 0
+    for hole_num, score in logged:
+        par = get_hole_par(round_state, hole_num)
+        if par is None:
+            have_all_pars = False
+        else:
+            par_total += par
+        total += score
+    logged_set = {h for h, _ in logged}
+    max_logged = max(logged_set)
+    missing = [h for h in range(1, max_logged + 1) if h not in logged_set]
+
+    if not have_all_pars or par_total == 0:
+        base = f"{total} strokes across {len(logged)} holes"
+    else:
+        vs = total - par_total
+        if vs == 0:
+            label = "even par"
+        elif vs > 0:
+            label = f"{vs}-over par"
+        else:
+            label = f"{abs(vs)}-under par"
+        if missing:
+            base = f"{label} ({total} strokes across {len(logged)} holes)"
+        else:
+            base = f"{label} ({total} strokes through {len(logged)} holes)"
+    if missing:
+        missing_str = ", ".join(str(h) for h in missing)
+        base += f" — still need to log hole(s) {missing_str}"
+    return base
 
 
 # ────────────────────────────────────────────────────────────
@@ -663,30 +710,20 @@ def format_score_context(round_state: dict) -> str:
     if not logged:
         return ""
     lines = ["\n=== CURRENT SCORECARD ==="]
-    par_total = 0
-    total = 0
     for hole_num, score in logged:
         par = get_hole_par(round_state, hole_num)
         if par:
-            par_total += par
             diff = score - par
             label = {-2: "eagle", -1: "birdie", 0: "par", 1: "bogey", 2: "double", 3: "triple"}.get(diff, f"+{diff}" if diff > 0 else str(diff))
             lines.append(f"  Hole {hole_num} (par {par}): {score} — {label}")
         else:
             lines.append(f"  Hole {hole_num}: {score}")
-        total += score
-    if par_total:
-        vs = total - par_total
-        if vs == 0:
-            status = f"even par ({total} strokes through {len(logged)} holes)"
-        elif vs > 0:
-            status = f"{vs}-over par ({total} strokes through {len(logged)} holes)"
-        else:
-            status = f"{abs(vs)}-under par ({total} strokes through {len(logged)} holes)"
-        lines.append(f"")
+    status = compute_round_status(round_state)
+    if status:
+        lines.append("")
         lines.append(f"ROUND STATUS: {status}")
-        lines.append(f"When the player asks about their score or you acknowledge a result, use this exact status — do not recompute it.")
-    else:
-        lines.append(f"Total: {total} through {len(logged)} holes")
-    lines.append(f"Current hole: {round_state.get('current_hole', len(logged) + 1)}")
+        lines.append("When the player asks about their score or you acknowledge a result, use this exact status — do not recompute it.")
+    logged_set = {h for h, _ in logged}
+    max_logged = max(logged_set)
+    lines.append(f"Current hole: {round_state.get('current_hole', max_logged + 1)}")
     return "\n".join(lines)
