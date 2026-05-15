@@ -525,7 +525,13 @@ def detect_and_load_course(
         return None  # course already loaded, don't re-detect
     if not anthropic_client:
         return None
-    if not any(k in text.lower() for k in COURSE_MENTION_KEYWORDS):
+    # No keyword pre-filter when no course is loaded — players phrase course
+    # mentions in too many ways ("I'm at X", "playing X", "about to play X",
+    # "round at X", or just "X today") for a static keyword list to cover.
+    # One Haiku call per message until a course is loaded is negligible cost.
+    # Short messages are very unlikely to contain a course name though, so
+    # skip those to avoid wasting a call on every "thanks" or "ok".
+    if len(text.split()) < 3:
         return None
 
     response = anthropic_client.messages.create(
@@ -533,6 +539,8 @@ def detect_and_load_course(
         max_tokens=30,
         messages=[{"role": "user", "content": (
             f'Does this text mention a specific golf course or golf club by name? "{text}"\n'
+            'Examples that qualify: "playing Cypress Point", "about to play Wine Valley", '
+            '"I\'m at Augusta", "round at Pebble", "today at Bandon Dunes". '
             'If yes, return only the course or club name. If no, return "none".'
         )}],
     )
