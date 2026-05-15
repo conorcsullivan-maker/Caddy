@@ -85,30 +85,52 @@ GOLF_COURSE_HEADERS = (
 
 TEE_COLORS = ["black", "blue", "gold", "white", "green", "red", "silver", "championship", "tips", "tournament"]
 
-def _extract_json(text: str) -> Optional[dict]:
-    """Strip optional markdown code fences and parse JSON. Returns None on failure."""
+def _extract_json(text: str):
+    """Strip optional markdown code fences and parse JSON. Returns None on failure.
+    Accepts both objects and arrays at the top level."""
     if not text:
         return None
     cleaned = text.strip()
     # Remove ```json or ``` fences
     if cleaned.startswith("```"):
-        # Find first newline to skip the opening fence (and optional 'json' tag)
         first_nl = cleaned.find("\n")
         if first_nl != -1:
             cleaned = cleaned[first_nl + 1:]
-        # Strip trailing fence
         if cleaned.rstrip().endswith("```"):
             cleaned = cleaned.rstrip()[:-3]
     cleaned = cleaned.strip()
-    # As a fallback, try to find the first { ... } block
-    if not cleaned.startswith("{"):
-        match = re.search(r"\{.*\}", cleaned, re.DOTALL)
+    # If it doesn't start with { or [, try to find the first JSON-shaped block
+    if not (cleaned.startswith("{") or cleaned.startswith("[")):
+        match = re.search(r"[\{\[].*[\}\]]", cleaned, re.DOTALL)
         if match:
             cleaned = match.group(0)
     try:
         return json.loads(cleaned)
     except Exception:
         return None
+
+
+def _get_alternative_spellings(name: str) -> list:
+    """If a course name didn't match the API, ask Haiku for likely variations."""
+    if not anthropic_client or not name:
+        return []
+    try:
+        response = anthropic_client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=120,
+            messages=[{"role": "user", "content": (
+                f'A user mentioned the golf course name "{name}" but searching a golf-course database returned no results. '
+                'The course probably exists but is spelled slightly differently (extra/missing space, hyphen, alternate word like "Course" vs "Club" vs "Golf Course", different punctuation). '
+                'Suggest up to 3 likely alternative spellings or canonical names.\n'
+                'Return ONLY a JSON array of strings, no commentary. Example: ["Butter Brook", "Butter Brook Golf Club"]'
+            )}],
+        )
+        data = _extract_json(response.content[0].text)
+        if isinstance(data, list):
+            return [s for s in data if isinstance(s, str) and s.strip() and s.strip().lower() != name.strip().lower()]
+    except Exception:
+        pass
+    return []
 
 
 END_ROUND_PHRASES = [
@@ -173,10 +195,17 @@ def search_course(query: str) -> list:
         else:
             break
 
-    # 3. As a final attempt, just the first 2 words (often the unique part of the name)
+    # 3. Try just the first 2 words (often the unique part of the name)
     if len(query.split()) > 2:
         first_two = " ".join(query.split()[:2])
         results = _raw_search(first_two)
+        if results:
+            return results
+
+    # 4. Last resort: ask Claude for alternative spellings (handles Whisper
+    # transcription quirks like 'Butterbrook' vs 'Butter Brook')
+    for alt in _get_alternative_spellings(query):
+        results = _raw_search(alt)
         if results:
             return results
 
