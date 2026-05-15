@@ -154,15 +154,53 @@ def caddy_reply(user: dict, conversation_history: list[dict], new_message: str,
     return response.content[0].text
 
 
+WHISPER_HALLUCINATIONS = [
+    # English YouTube-style sign-offs (Whisper trained on lots of YouTube)
+    "if you like my video", "please subscribe", "like and subscribe",
+    "thanks for watching", "thank you for watching", "don't forget to subscribe",
+    "see you in the next video", "hit the like button", "subscribe to my channel",
+    "smash that like button", "ring the bell", "see you next time",
+    "thanks for listening", "let me know in the comments",
+    # Japanese YouTube hallucinations
+    "チャンネル登録をお願いします", "ご視聴ありがとうございました",
+    "登録お願いします", "高評価",
+    # Korean / Spanish / French / German common ones
+    "구독", "suscríbete", "abonnez-vous", "abonniert",
+    # Misc filler hallucinations
+    "thank you.", "thanks.", "you", ".", "...",
+]
+
+
+def is_likely_hallucination(text: str) -> bool:
+    """Detect transcripts that are almost certainly Whisper noise/hallucination."""
+    if not text or not text.strip():
+        return True
+    lower = text.lower().strip().rstrip(".!?,。")
+    if not lower:
+        return True
+    # Exact match or substring match against known hallucinations
+    for h in WHISPER_HALLUCINATIONS:
+        if h in lower or lower in h:
+            return True
+    # Mostly non-ASCII (likely a foreign-script hallucination from noise)
+    non_ascii = sum(1 for c in text if ord(c) > 127)
+    if non_ascii / max(len(text), 1) > 0.5:
+        return True
+    return False
+
+
 def transcribe_audio(audio_bytes: bytes, filename: str = "audio.webm") -> str:
-    """Send audio to Whisper, return transcript."""
+    """Send audio to Whisper, return transcript. Returns empty string for likely hallucinations."""
     audio_file = io.BytesIO(audio_bytes)
     audio_file.name = filename
     transcript = openai_client.audio.transcriptions.create(
         model="whisper-1",
         file=audio_file,
     )
-    return transcript.text.strip()
+    text = transcript.text.strip()
+    if is_likely_hallucination(text):
+        return ""
+    return text
 
 
 def synthesize_speech(text: str) -> bytes:
