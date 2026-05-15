@@ -328,14 +328,17 @@ export default function CaddyPage() {
         </div>
       )}
 
-      {/* Live round status bar — only shows when a round is in progress */}
-      {roundState.course && (
+      {/* Live round status bar — shows as soon as there's any round activity:
+          a loaded course, any logged score, or progress past hole 1. */}
+      {hasRoundActivity(roundState) && (
         <div className="bg-forest text-cream px-5 py-1.5 border-b border-forest-deep flex-shrink-0">
           <div className="max-w-2xl mx-auto w-full text-[11px] flex items-center gap-3">
             <span className="eyebrow text-gold flex-shrink-0">Round</span>
             <span className="text-cream/95 truncate">
-              {shortCourseName(roundState.course.club_name)}
-              {roundState.tee?.tee_name ? ` · ${roundState.tee.tee_name}` : ""}
+              {roundState.course
+                ? shortCourseName(roundState.course.club_name) +
+                  (roundState.tee?.tee_name ? ` · ${roundState.tee.tee_name}` : "")
+                : "No course loaded"}
               {` · ${formatHoleStatus(roundState)}`}
             </span>
           </div>
@@ -537,6 +540,16 @@ function shortCourseName(name?: string): string {
   return name
     .replace(/\s+(Golf Course|Golf Club|Country Club|Golf Links|Links)$/i, "")
     .trim();
+}
+
+// A round is "active" the moment any score has been logged or the player has
+// moved past hole 1, even if no course is loaded. The banner uses this so
+// the player can always see what hole they're on and what they've shot.
+function hasRoundActivity(state: RoundState): boolean {
+  if (state.course) return true;
+  if (state.hole_scores?.some((s) => s !== null && s !== undefined)) return true;
+  if ((state.current_hole || 1) > 1) return true;
+  return false;
 }
 
 function formatHoleStatus(state: RoundState): string {
