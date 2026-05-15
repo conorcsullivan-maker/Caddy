@@ -450,8 +450,11 @@ def detect_and_update_tee(text: str, round_state: dict) -> Optional[dict]:
 
 
 def detect_and_load_course(text: str, current_round_state: dict) -> Optional[dict]:
-    """If the text mentions a golf course AND no course is currently loaded,
-    look it up in the API and return the loaded course/tee. Otherwise None."""
+    """Try to detect and load a course from natural language. Returns one of:
+    - None: no course mention detected
+    - {"status": "loaded", "course": ..., "tee": ...}: course loaded successfully
+    - {"status": "not_found", "query": "..."}: course mentioned but not in API
+    """
     if current_round_state.get("course"):
         return None  # course already loaded, don't re-detect
     if not anthropic_client:
@@ -473,16 +476,16 @@ def detect_and_load_course(text: str, current_round_state: dict) -> Optional[dic
 
     courses = search_course(result)
     if not courses:
-        return None
+        return {"status": "not_found", "query": result}
     course_data = get_course(courses[0]["id"])
     if not course_data:
-        return None
+        return {"status": "not_found", "query": result}
     tee_color = extract_tee_color(text)
     tee = find_tee(course_data, tee_color)
     if not tee:
-        return None
+        return {"status": "not_found", "query": result}
 
-    return {"course": course_data, "tee": tee}
+    return {"status": "loaded", "course": course_data, "tee": tee}
 
 
 # ────────────────────────────────────────────────────────────

@@ -518,28 +518,48 @@ def process_user_message(user: dict, message: str,
     if is_end_of_round(message) and round_state.get("hole_scores"):
         return handle_round_complete(user, history, message, round_state)
 
-    # 1b. Course rejection — if player loaded a course but hasn't confirmed it yet,
-    # check if this message is rejecting it so we can unload and re-detect below.
+    # 1b. Course rejection — if the player just had a course loaded and pushes back on it,
+    # unload it so they can rename / send a scorecard / just play. Tight phrase list
+    # to avoid false positives like "no, going for it" or "wrong club".
+    course_rejected = False
     if round_state.get("course_confirmed") is False:
-        _rejection = {"no", "nope", "wrong", "incorrect", "different"}
-        if _rejection & set(message.lower().split()):
+        _msg_lower = message.lower()
+        _rejection_phrases = [
+            "wrong course", "not the right course", "not that course",
+            "different course", "that's not it", "that's not the one",
+            "not this course",
+        ]
+        _short_rejections = {"no", "nope", "nah", "wrong", "incorrect"}
+        _is_short_reject = (
+            len(message.split()) <= 3
+            and any(w in _msg_lower.split() for w in _short_rejections)
+        )
+        if any(p in _msg_lower for p in _rejection_phrases) or _is_short_reject:
             round_state.pop("course", None)
             round_state.pop("tee", None)
             round_state.pop("course_confirmed", None)
             events.append({"type": "course_unloaded"})
+            course_rejected = True
 
-    # 2. Course detection (only if no course loaded)
+    # 2. Course detection (only if no course loaded). Returns either a loaded course,
+    # a "not_found" signal so Caddy can offer alternatives, or None.
     course_load = detect_and_load_course(message, round_state)
-    if course_load:
+    course_loaded_now = False
+    course_not_found_query: Optional[str] = None
+    if course_load and course_load.get("status") == "loaded":
         round_state["course"] = course_load["course"]
         round_state["tee"] = course_load["tee"]
         round_state["started_at"] = round_state.get("started_at") or now_iso()
         round_state["course_confirmed"] = False
+        course_loaded_now = True
         events.append({
             "type": "course_loaded",
             "course_name": course_load["course"].get("club_name"),
             "tee_name": course_load["tee"].get("tee_name"),
         })
+    elif course_load and course_load.get("status") == "not_found":
+        course_not_found_query = course_load.get("query")
+        events.append({"type": "course_not_found", "query": course_not_found_query})
 
     # 2b. Tee change detection (course already loaded, player mentions a different tee color)
     new_tee = detect_and_update_tee(message, round_state)
@@ -572,19 +592,34 @@ def process_user_message(user: dict, message: str,
     weather_ctx = format_weather_context(weather) if weather else ""
     round_context = course_ctx + score_ctx + weather_ctx
 
-    # Course confirmation — on the exchange where course first loads, ask player to verify.
-    # On the next exchange, mark confirmed (they either said yes or just moved on).
-    if course_load:
+    # Course context handling — never block on confirmation. Three cases:
+    if course_loaded_now:
+        # Casually acknowledge the course in passing while answering whatever else was asked.
         _course = round_state["course"]
         _loc = (_course.get("location") or "").strip()
         _loc_str = f" in {_loc}" if _loc else ""
         round_context += (
-            f"\n\nNOTE: Course just loaded this message. Before giving any advice, "
-            f"confirm the course with the player in one casual sentence — e.g. "
-            f'"{_course.get("club_name", "this course")}{_loc_str} — that right?" '
-            f"Then stop and wait for their reply."
+            f"\n\nNOTE: Course just auto-loaded: {_course.get('club_name')}{_loc_str}. "
+            f"Acknowledge it casually in one short phrase (e.g. 'Got {_course.get('club_name')} loaded') "
+            f"and continue with whatever the player asked. Don't ask for confirmation or wait — keep moving."
+        )
+    elif course_not_found_query:
+        # Course was mentioned but lookup failed — offer the two escape hatches casually.
+        round_context += (
+            f"\n\nNOTE: Player mentioned a course (\"{course_not_found_query}\") but I couldn't find it in the database. "
+            f"Briefly let them know in one sentence, then offer two options casually: snap a photo of the scorecard "
+            f"(camera button in chat), or just play and tell you yardages as you go. Don't make a big deal of it — "
+            f"the course is a nice-to-have, not a blocker."
+        )
+    elif course_rejected:
+        # Player pushed back on the auto-loaded course — clear it and let them choose what's next.
+        round_context += (
+            f"\n\nNOTE: Player just rejected the course I auto-loaded. It's now cleared. "
+            f"Acknowledge briefly and offer them options: tell you the right course name, snap a scorecard photo, "
+            f"or just play and call out yardages as you go. Keep it short — don't push."
         )
     elif round_state.get("course_confirmed") is False:
+        # Player responded to a course load without rejecting — treat as implicit confirmation.
         round_state["course_confirmed"] = True
 
     # 6. Get Claude's reply
