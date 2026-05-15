@@ -713,9 +713,11 @@ async def caddy_photo(
 ):
     """Scorecard photo → Claude vision extraction → course load + caddy reply."""
     content_type = image.content_type or "image/jpeg"
+    print(f"[photo] user={user['username']} filename={image.filename!r} content_type={content_type!r}")
     if not content_type.startswith("image/"):
-        raise HTTPException(400, "File must be an image")
+        raise HTTPException(400, f"File must be an image, got {content_type!r}")
     image_bytes = await image.read()
+    print(f"[photo] image size: {len(image_bytes)} bytes ({len(image_bytes)/1024:.1f} KB)")
     if len(image_bytes) > 10 * 1024 * 1024:
         raise HTTPException(400, "Image too large (max 10MB)")
 

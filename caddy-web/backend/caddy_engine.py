@@ -169,49 +169,58 @@ def _extract_json(text: str):
 def extract_scorecard_from_image(image_bytes: bytes, media_type: str = "image/jpeg") -> Optional[dict]:
     """Use Claude vision to extract course and hole data from a scorecard photo.
     Returns structured dict or None if this isn't a recognizable scorecard."""
-    b64 = base64.b64encode(image_bytes).decode()
-    response = anthropic_client.messages.create(
-        model="claude-opus-4-7",
-        max_tokens=2000,
-        messages=[{
-            "role": "user",
-            "content": [
-                {
-                    "type": "image",
-                    "source": {"type": "base64", "media_type": media_type, "data": b64},
-                },
-                {
-                    "type": "text",
-                    "text": (
-                        "Look at this image. If it is a golf scorecard, extract the data and return ONLY valid JSON:\n"
-                        '{\n'
-                        '  "course_name": "Full course name as printed on the scorecard",\n'
-                        '  "city": "City or null",\n'
-                        '  "state": "State abbreviation or null",\n'
-                        '  "tees": [\n'
-                        '    {\n'
-                        '      "tee_name": "COLOR in ALL CAPS (e.g. BLACK, BLUE, WHITE, RED)",\n'
-                        '      "course_rating": 71.2,\n'
-                        '      "slope_rating": 128,\n'
-                        '      "total_yards": 6400,\n'
-                        '      "holes": [\n'
-                        '        {"hole": 1, "par": 4, "yardage": 385, "handicap": 7},\n'
-                        '        ... all 18 holes ...\n'
-                        '      ]\n'
-                        '    }\n'
-                        '  ]\n'
-                        '}\n'
-                        "Include every tee color visible on the scorecard. Use null for fields not shown.\n"
-                        'If this is NOT a golf scorecard, return {"error": "not a scorecard"}.'
-                    ),
-                },
-            ],
-        }],
-    )
-    data = _extract_json(response.content[0].text)
-    if not data or data.get("error") or not data.get("course_name") or not data.get("tees"):
+    print(f"[scorecard] media_type={media_type} size={len(image_bytes)}b")
+    try:
+        b64 = base64.b64encode(image_bytes).decode()
+        response = anthropic_client.messages.create(
+            model="claude-opus-4-7",
+            max_tokens=2000,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {"type": "base64", "media_type": media_type, "data": b64},
+                    },
+                    {
+                        "type": "text",
+                        "text": (
+                            "Look at this image. If it is a golf scorecard, extract the data and return ONLY valid JSON:\n"
+                            '{\n'
+                            '  "course_name": "Full course name as printed on the scorecard",\n'
+                            '  "city": "City or null",\n'
+                            '  "state": "State abbreviation or null",\n'
+                            '  "tees": [\n'
+                            '    {\n'
+                            '      "tee_name": "COLOR in ALL CAPS (e.g. BLACK, BLUE, WHITE, RED)",\n'
+                            '      "course_rating": 71.2,\n'
+                            '      "slope_rating": 128,\n'
+                            '      "total_yards": 6400,\n'
+                            '      "holes": [\n'
+                            '        {"hole": 1, "par": 4, "yardage": 385, "handicap": 7},\n'
+                            '        ... all 18 holes ...\n'
+                            '      ]\n'
+                            '    }\n'
+                            '  ]\n'
+                            '}\n'
+                            "Include every tee color visible on the scorecard. Use null for fields not shown.\n"
+                            'If this is NOT a golf scorecard, return {"error": "not a scorecard"}.'
+                        ),
+                    },
+                ],
+            }],
+        )
+        raw = response.content[0].text
+        print(f"[scorecard] Claude response: {raw[:500]}")
+        data = _extract_json(raw)
+        if not data or data.get("error") or not data.get("course_name") or not data.get("tees"):
+            print(f"[scorecard] extraction failed — parsed: {data}")
+            return None
+        print(f"[scorecard] extracted course: {data.get('course_name')}")
+        return data
+    except Exception as e:
+        print(f"[scorecard] API error: {e}")
         return None
-    return data
 
 
 def caddy_reply(user: dict, conversation_history: list[dict], new_message: str,
