@@ -522,17 +522,29 @@ def detect_and_log_score(text: str, round_state: dict) -> Optional[dict]:
         return None
 
     current_hole = round_state.get("current_hole", 1)
-    par = get_hole_par(round_state, current_hole)
-    par_info = f"Current hole: {current_hole}, par: {par}." if par else f"Current hole: {current_hole}, par unknown."
+    # Give Haiku the par of every hole, not just current. Players reference holes
+    # out of order ("I got a double on the fifth" while on hole 6) and we need to
+    # compute relative scores against the right hole's par.
+    tee = round_state.get("tee") or {}
+    par_lines = [
+        f"  hole {i}: par {h.get('par')}"
+        for i, h in enumerate(tee.get("holes") or [], 1)
+        if h.get("par")
+    ]
+    par_block = "\n".join(par_lines) if par_lines else "  (pars unknown)"
+    par_info = f"Current hole: {current_hole}.\nHole pars:\n{par_block}"
 
     response = anthropic_client.messages.create(
         model="claude-haiku-4-5-20251001",
         max_tokens=80,
         messages=[{"role": "user", "content": (
-            f'Golfer said: "{text}"\n{par_info}\n'
+            f'Golfer said: "{text}"\n{par_info}\n\n'
             'Is the player reporting their score for a hole? '
             'Return JSON only: {"score": integer_or_null, "hole": integer_or_null}\n'
-            'birdie=par-1, eagle=par-2, bogey=par+1, double=par+2, triple=par+3, hole in one=1.\n'
+            'If the player names a specific hole (e.g. "on the fifth", "hole 4", "the par 3"), '
+            'use that hole. Otherwise assume the current hole.\n'
+            'Relative terms: birdie=par-1, eagle=par-2, bogey=par+1, double=par+2, triple=par+3, '
+            'hole in one=1. Always compute against the par of the HOLE BEING REPORTED — not the current hole.\n'
             'If not a score report return {"score": null, "hole": null}'
         )}],
     )

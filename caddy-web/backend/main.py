@@ -645,10 +645,22 @@ def process_user_message(user: dict, message: str,
             f"{score_just_logged.get('score')}"
         )
         _status_str = compute_round_status(round_state) or f"{score_just_logged.get('score')} strokes through 1 hole"
+        # Detect any holes that got skipped — Caddy should ask about them casually.
+        _scores = round_state.get("hole_scores") or []
+        _max_logged = max((i + 1 for i, s in enumerate(_scores) if s is not None), default=0)
+        _missing = [i + 1 for i, s in enumerate(_scores[:_max_logged]) if s is None]
+        _missing_hint = ""
+        if _missing:
+            _missing_str = ", ".join(str(h) for h in _missing)
+            _missing_hint = (
+                f" Also: hole(s) {_missing_str} still don't have a score logged. After acknowledging this one, "
+                f"casually ask what they made on the missing hole(s) — one short sentence, conversational, like "
+                f"'btw, what'd you make on {_missing[0]}? Never logged it.' Keep playing either way."
+            )
         round_context += (
             f"\n\nNOTE: Player just reported {score_just_logged.get('score')} on hole {score_just_logged.get('hole')} "
             f"({_result_label}). Round status is now: {_status_str}. "
-            f"Acknowledge in one short sentence using this exact status — do not recompute."
+            f"Acknowledge in one short sentence using this exact status — do not recompute.{_missing_hint}"
         )
 
     # 6. Get Claude's reply
