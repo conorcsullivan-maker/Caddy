@@ -176,6 +176,10 @@ export const api = {
         history: { role: "user" | "assistant"; content: string }[];
         round_state: RoundState;
       }>("/api/caddy/history"),
+    weather: (lat: number, lng: number) =>
+      request<{ weather: WeatherSnapshot | null }>(
+        `/api/caddy/weather?lat=${lat}&lng=${lng}`
+      ),
     reset: () =>
       request<{ status: string; archived_conversation_id?: number | null }>(
         "/api/caddy/reset",

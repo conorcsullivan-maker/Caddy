@@ -68,6 +68,16 @@ export default function CaddyPage() {
     );
   }, []);
 
+  // Populate the weather strip as soon as we have location, so it appears
+  // without waiting for the first chat message.
+  useEffect(() => {
+    if (!location) return;
+    api.caddy
+      .weather(location.lat, location.lng)
+      .then(({ weather: w }) => { if (w) setWeather(w); })
+      .catch(() => { /* silent — strip just stays hidden */ });
+  }, [location]);
+
   // Auto-scroll to bottom on new messages
   useEffect(() => {
     if (scrollRef.current) {

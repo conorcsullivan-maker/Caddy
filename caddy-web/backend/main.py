@@ -478,6 +478,13 @@ def get_history(user: dict = Depends(get_current_user)):
     }
 
 
+@app.get("/api/caddy/weather")
+def get_weather(lat: float, lng: float, user: dict = Depends(get_current_user)):
+    """Standalone weather lookup so the weather strip can populate on page load
+    without waiting for the user to send a chat message."""
+    return {"weather": fetch_weather(lat, lng)}
+
+
 @app.post("/api/caddy/reset")
 def reset_history(user: dict = Depends(get_current_user)):
     """Archive the current conversation as 'casual' and start fresh."""
