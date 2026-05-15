@@ -518,12 +518,23 @@ def process_user_message(user: dict, message: str,
     if is_end_of_round(message) and round_state.get("hole_scores"):
         return handle_round_complete(user, history, message, round_state)
 
+    # 1b. Course rejection — if player loaded a course but hasn't confirmed it yet,
+    # check if this message is rejecting it so we can unload and re-detect below.
+    if round_state.get("course_confirmed") is False:
+        _rejection = {"no", "nope", "wrong", "incorrect", "different"}
+        if _rejection & set(message.lower().split()):
+            round_state.pop("course", None)
+            round_state.pop("tee", None)
+            round_state.pop("course_confirmed", None)
+            events.append({"type": "course_unloaded"})
+
     # 2. Course detection (only if no course loaded)
     course_load = detect_and_load_course(message, round_state)
     if course_load:
         round_state["course"] = course_load["course"]
         round_state["tee"] = course_load["tee"]
         round_state["started_at"] = round_state.get("started_at") or now_iso()
+        round_state["course_confirmed"] = False
         events.append({
             "type": "course_loaded",
             "course_name": course_load["course"].get("club_name"),
@@ -560,6 +571,21 @@ def process_user_message(user: dict, message: str,
     score_ctx = format_score_context(round_state)
     weather_ctx = format_weather_context(weather) if weather else ""
     round_context = course_ctx + score_ctx + weather_ctx
+
+    # Course confirmation — on the exchange where course first loads, ask player to verify.
+    # On the next exchange, mark confirmed (they either said yes or just moved on).
+    if course_load:
+        _course = round_state["course"]
+        _loc = (_course.get("location") or "").strip()
+        _loc_str = f" in {_loc}" if _loc else ""
+        round_context += (
+            f"\n\nNOTE: Course just loaded this message. Before giving any advice, "
+            f"confirm the course with the player in one casual sentence — e.g. "
+            f'"{_course.get("club_name", "this course")}{_loc_str} — that right?" '
+            f"Then stop and wait for their reply."
+        )
+    elif round_state.get("course_confirmed") is False:
+        round_state["course_confirmed"] = True
 
     # 6. Get Claude's reply
     reply = caddy_reply(user, history, message, round_context=round_context)

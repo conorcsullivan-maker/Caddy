@@ -87,12 +87,6 @@ export default function ProfilePage() {
             <p className="eyebrow text-gold mt-0.5">Your profile</p>
           </div>
           <div className="flex items-center gap-4">
-            <Link
-              href="/setup/bag"
-              className="text-[12px] eyebrow text-muted hover:text-forest transition"
-            >
-              Edit bag
-            </Link>
             {user.is_admin && (
               <Link
                 href="/admin"
@@ -164,9 +158,26 @@ export default function ProfilePage() {
         </div>
 
         {/* Bag */}
-        <Section title="Your bag">
+        <div className="mb-10">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="wordmark text-[24px] text-forest">Your bag</h2>
+            <Link
+              href="/setup/bag"
+              className="text-[12px] eyebrow text-muted hover:text-forest transition px-3 py-1 border border-line rounded-full"
+            >
+              Edit
+            </Link>
+          </div>
           {inBag.length === 0 ? (
-            <Empty text="No clubs in your bag yet. Run onboarding to add them." />
+            <div className="bg-paper border border-line border-dashed rounded-2xl p-6 text-center">
+              <p className="text-[13px] text-muted mb-3">No clubs in your bag yet.</p>
+              <Link
+                href="/setup/bag"
+                className="text-[13px] eyebrow text-forest hover:underline"
+              >
+                Set up your bag →
+              </Link>
+            </div>
           ) : (
             <div className="bg-paper border border-line rounded-2xl divide-y divide-line">
               {inBag.map((club) => (
@@ -179,15 +190,24 @@ export default function ProfilePage() {
               ))}
             </div>
           )}
-        </Section>
+        </div>
 
         {/* Tendencies */}
-        <Section title="Tendencies">
+        <div className="mb-10">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="wordmark text-[24px] text-forest">Tendencies</h2>
+            <Link
+              href="/setup/bag"
+              className="text-[12px] eyebrow text-muted hover:text-forest transition px-3 py-1 border border-line rounded-full"
+            >
+              Edit
+            </Link>
+          </div>
           <div className="bg-paper border border-line rounded-2xl p-5 space-y-4">
             <Field label="Driver miss" value={user.driver_miss} />
             <Field label="Iron miss" value={user.iron_miss} />
           </div>
-        </Section>
+        </div>
 
         {/* Recent rounds */}
         <Section title="Recent rounds">
