@@ -709,8 +709,14 @@ def detect_and_log_score(text: str, round_state: dict) -> Optional[dict]:
         if par is not None:
             return {"hole": hole_num, "score": par - int(m.group(1)), "par": par}
 
-    # "made par" / "got par" / "for par" — straight par.
-    if re.search(r"\b(?:made|got|for|shot)\s+par\b", text_lower):
+    # "made par" / "got a par" / "for a par" / "par on N" — straight par.
+    # Negative lookahead (?!\s*\d) excludes "par 3 hole" mentions, which aren't
+    # score reports but descriptions of the hole type.
+    par_score_pattern = re.compile(
+        r"\b(?:made|got|for|shot|had|took|scored|carded|posted)\s+(?:a\s+)?par\b(?!\s*\d)"
+    )
+    par_on_hole_pattern = re.compile(r"\bpar\s+on\s+(?:the\s+)?\w+")
+    if par_score_pattern.search(text_lower) or par_on_hole_pattern.search(text_lower):
         hole_num = _extract_hole_number(text) or round_state.get("current_hole", 1)
         par = get_hole_par(round_state, hole_num)
         if par is not None:
