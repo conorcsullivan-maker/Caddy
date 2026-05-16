@@ -173,6 +173,19 @@ export default function CaddyPage() {
 
   async function startRecording() {
     setError(null);
+    // Prime audio inside this user gesture. iOS Safari grants playback
+    // permission for the rest of the session if play() succeeds during a
+    // tap handler. Without this, the gesture "credit" expires during the
+    // Whisper+Claude roundtrip and the TTS audio that comes back gets
+    // blocked. Uses a 1ms silent WAV so nothing audible happens.
+    try {
+      const unlock = new Audio(
+        "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA="
+      );
+      unlock.play().then(() => unlock.pause()).catch(() => {});
+    } catch {
+      // Audio prime is best-effort; the tap-to-enable banner is the fallback.
+    }
     // Instant feedback — flip to recording state BEFORE the browser permission check
     setRecording(true);
     vibrate(40);

@@ -22,6 +22,12 @@ export const metadata: Metadata = {
   title: "Caddy — The AI golf caddy that knows your game",
   description:
     "A voice-first, learning, course-aware AI golf caddy. Built for every golfer.",
+  manifest: "/manifest.webmanifest",
+  appleWebApp: {
+    capable: true,
+    title: "Caddy",
+    statusBarStyle: "black-translucent",
+  },
 };
 
 export const viewport: Viewport = {

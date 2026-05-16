@@ -1,0 +1,11 @@
+{
+  "name": "Caddy",
+  "short_name": "Caddy",
+  "description": "Your AI golf caddy — voice-first, course-aware, knows your game.",
+  "start_url": "/caddy",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#F5F1E8",
+  "theme_color": "#0E3A2E"
+}
