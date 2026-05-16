@@ -95,18 +95,58 @@ export default function CaddyPage() {
     ta.style.height = `${Math.min(ta.scrollHeight, 160)}px`;
   }, [input]);
 
+  // Reuse the SAME HTMLAudioElement across all playback. iOS Safari grants
+  // playback permission per-element after a successful play during a user
+  // gesture — so priming a fresh element each time doesn't persist the unlock.
+  // One persistent element + we just swap its src.
+  function getOrCreateAudioElement(): HTMLAudioElement {
+    if (!audioElementRef.current) {
+      const a = new Audio();
+      a.addEventListener("error", () => {
+        const err = a.error;
+        if (err) console.warn("[caddy] audio element error:", err.code, err.message);
+      });
+      audioElementRef.current = a;
+    }
+    return audioElementRef.current;
+  }
+
+  // Verified silent MP3 — 0.04s, ~700 bytes. Plays inaudibly but counts as
+  // a real audio play, which unlocks the element on iOS Safari.
+  const SILENT_MP3 =
+    "data:audio/mp3;base64,SUQzBAAAAAABEVRYWFgAAAAtAAADY29tbWVudABCaWdTb3VuZEJhbmsuY29tIC8gTGFTb25vdGhlcXVlLm9yZwBURU5DAAAAHQAAA1N3aXRjaCBQbHVzIMKpIE5DSCBTb2Z0d2FyZQBUSVQyAAAABgAAAzIyMzUAVFNTRQAAAA8AAANMYXZmNTcuODMuMTAwAAAAAAAAAAAAAAD/80DEAAAAA0gAAAAATEFNRTMuMTAwVVVVVVVVVVVVVUxBTUUzLjEwMFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//sQZAADwnAAf/AAAAIAAA/wAAABAAABLAAAACAAACWAAAAEVVVVVVVVVVVVVVVVVVVVVVVVVV";
+
+  function primeAudio() {
+    try {
+      const audio = getOrCreateAudioElement();
+      audio.src = SILENT_MP3;
+      audio.muted = true;
+      audio.play().then(() => {
+        audio.pause();
+        audio.currentTime = 0;
+        audio.muted = false;
+      }).catch((err) => {
+        console.warn("[caddy] audio prime failed:", (err as Error)?.name);
+      });
+    } catch (err) {
+      console.warn("[caddy] audio prime threw:", err);
+    }
+  }
+
   async function speakText(text: string) {
     setLastReply(text);
     if (muted) return;
     try {
       const blob = await api.caddy.fetchSpeech(text);
       const url = URL.createObjectURL(blob);
-      if (audioElementRef.current) {
-        audioElementRef.current.pause();
-        URL.revokeObjectURL(audioElementRef.current.src);
-      }
-      const audio = new Audio(url);
-      audioElementRef.current = audio;
+      const audio = getOrCreateAudioElement();
+      try {
+        audio.pause();
+        if (audio.src && audio.src.startsWith("blob:")) {
+          URL.revokeObjectURL(audio.src);
+        }
+      } catch { /* fine */ }
+      audio.src = url;
       try {
         await audio.play();
         setAudioBlocked(false);
@@ -127,6 +167,7 @@ export default function CaddyPage() {
     e?.preventDefault();
     const text = input.trim();
     if (!text || sending) return;
+    primeAudio();
     setError(null);
     setInput("");
     // Optimistic user bubble
@@ -173,19 +214,14 @@ export default function CaddyPage() {
 
   async function startRecording() {
     setError(null);
-    // Prime audio inside this user gesture. iOS Safari grants playback
-    // permission for the rest of the session if play() succeeds during a
-    // tap handler. Without this, the gesture "credit" expires during the
-    // Whisper+Claude roundtrip and the TTS audio that comes back gets
-    // blocked. Uses a 1ms silent WAV so nothing audible happens.
-    try {
-      const unlock = new Audio(
-        "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA="
-      );
-      unlock.play().then(() => unlock.pause()).catch(() => {});
-    } catch {
-      // Audio prime is best-effort; the tap-to-enable banner is the fallback.
-    }
+    // Prime audio inside this user gesture. The mic-tap counts as a gesture,
+    // but the Whisper+Claude roundtrip takes long enough that the gesture
+    // credit expires before TTS plays. Workaround: do a "successful play"
+    // on the SAME audio element right now with a verified silent MP3.
+    // iOS Safari then grants playback permission to this element for the
+    // rest of the session. Subsequent .src swaps + .play() work without
+    // needing a fresh gesture.
+    primeAudio();
     // Instant feedback — flip to recording state BEFORE the browser permission check
     setRecording(true);
     vibrate(40);
