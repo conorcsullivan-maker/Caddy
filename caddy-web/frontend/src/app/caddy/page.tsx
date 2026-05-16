@@ -104,9 +104,15 @@ export default function CaddyPage() {
       }
       const audio = new Audio(url);
       audioElementRef.current = audio;
-      audio.play().catch(() => {});
-    } catch {
-      // Silent fail — user can still read the text
+      audio.play().catch((err) => {
+        // Most common cause: mobile Safari autoplay policy blocked playback
+        // because we haven't had a recent user gesture. Log it so we can see
+        // in DevTools instead of failing silently.
+        console.warn("[caddy] audio.play blocked:", err?.name, err?.message);
+      });
+    } catch (err) {
+      console.warn("[caddy] TTS fetch failed:", err);
+      // User can still read the text
     }
   }
 
@@ -404,8 +410,12 @@ export default function CaddyPage() {
             <button
               type="button"
               onClick={() => setMuted(!muted)}
-              className="flex-shrink-0 w-9 h-9 mb-1.5 rounded-full text-muted hover:text-forest hover:bg-cream/60 flex items-center justify-center transition"
-              title={muted ? "Unmute Caddy voice" : "Mute Caddy voice"}
+              className={`flex-shrink-0 w-9 h-9 mb-1.5 rounded-full flex items-center justify-center transition ${
+                muted
+                  ? "bg-red-100 text-red-700 ring-2 ring-red-300 hover:bg-red-200"
+                  : "text-muted hover:text-forest hover:bg-cream/60"
+              }`}
+              title={muted ? "Caddy is muted — tap to unmute" : "Mute Caddy voice"}
               aria-label={muted ? "Unmute" : "Mute"}
             >
               {muted ? <SpeakerMutedIcon /> : <SpeakerIcon />}
