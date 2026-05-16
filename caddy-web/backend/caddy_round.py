@@ -540,31 +540,66 @@ def detect_and_load_course(
     try:
         response = anthropic_client.messages.create(
             model="claude-haiku-4-5-20251001",
-            max_tokens=30,
+            max_tokens=80,
             messages=[{"role": "user", "content": (
                 f'Does this text mention a specific golf course or golf club by name? "{text}"\n'
-                'Examples that qualify: "playing Cypress Point", "about to play Wine Valley", '
-                '"I\'m at Augusta", "round at Pebble", "today at Bandon Dunes". '
-                'If yes, return only the course or club name. If no, return "none".'
+                'Examples that qualify: "playing Cypress Point", "about to play Wine Valley in Walla Walla", '
+                '"I\'m at Augusta", "round at Pebble", "today at Bandon Dunes in Oregon".\n'
+                'Return JSON: {"name": "course name", "city": "city or null", "state": "two-letter US state abbreviation or null"}.\n'
+                'If no course mentioned, return {"name": null}.'
             )}],
         )
     except Exception:
         return None
-    result = response.content[0].text.strip()
-    if result.lower() in ("none", "no", "") or len(result) < 4:
+    parsed = _extract_json(response.content[0].text) or {}
+    result = (parsed.get("name") or "").strip()
+    stated_city = (parsed.get("city") or "").strip().lower()
+    stated_state = (parsed.get("state") or "").strip().upper()
+    if not result or result.lower() in ("none", "no", "null") or len(result) < 4:
         return None
 
     candidates = search_course(result)
     if not candidates:
         return {"status": "not_found", "query": result}
 
-    # Pick the candidate closest to the player's GPS. Falls back to the first
-    # result when no location is available or the API doesn't have coordinates.
+    # Picking strategy in priority order:
+    # 1. If the player explicitly mentioned a city or state, prefer the
+    #    candidate whose location matches. This overrides GPS — a player
+    #    in Boston talking about an Oklahoma City course is naming a
+    #    destination, not their current GPS location.
+    # 2. Else if GPS available, pick the closest candidate.
+    # 3. Else pick the first search result.
     course_data: Optional[dict] = None
     distance_miles: Optional[float] = None
-    if player_lat is not None and player_lng is not None:
+
+    def _course_matches_stated_location(c: dict) -> bool:
+        loc = c.get("location") or {}
+        if not isinstance(loc, dict):
+            return False
+        c_city = (loc.get("city") or "").strip().lower()
+        c_state = (loc.get("state") or "").strip().upper()
+        if stated_state and stated_state == c_state:
+            if stated_city and stated_city != c_city:
+                return False  # state matches but city doesn't
+            return True
+        if stated_city and stated_city == c_city:
+            return True
+        return False
+
+    if stated_city or stated_state:
+        for c in candidates[:8]:
+            full = get_course(c["id"])
+            if full and _course_matches_stated_location(full):
+                course_data = full
+                if player_lat is not None and player_lng is not None:
+                    ll = _course_lat_lng(full)
+                    if ll:
+                        distance_miles = _haversine_miles(player_lat, player_lng, ll[0], ll[1])
+                break
+
+    if course_data is None and player_lat is not None and player_lng is not None:
         best_distance = float("inf")
-        for c in candidates[:8]:  # limit lookups for speed
+        for c in candidates[:8]:
             full = get_course(c["id"])
             ll = _course_lat_lng(full) if full else None
             if not ll:
@@ -574,8 +609,8 @@ def detect_and_load_course(
                 best_distance = d
                 course_data = full
                 distance_miles = d
+
     if course_data is None:
-        # No GPS, or no candidate had usable coordinates — fall back to first match
         course_data = get_course(candidates[0]["id"])
     if not course_data:
         return {"status": "not_found", "query": result}
