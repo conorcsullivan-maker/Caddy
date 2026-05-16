@@ -21,6 +21,7 @@ export default function CaddyPage() {
   const [muted, setMuted] = useState(false);
   const [audioBlocked, setAudioBlocked] = useState(false);
   const [lastReply, setLastReply] = useState<string | null>(null);
+  const [audioDebug, setAudioDebug] = useState<string>("audio: idle");
   const [recording, setRecording] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
   const [roundState, setRoundState] = useState<RoundState>({ hole_scores: [], current_hole: 1 });
@@ -116,38 +117,44 @@ export default function CaddyPage() {
 
   function primeAudio() {
     const ctx = getAudioContext();
-    if (!ctx) return;
+    if (!ctx) {
+      setAudioDebug("audio: NO AudioContext support");
+      return;
+    }
+    setAudioDebug(`audio: prime, state=${ctx.state}`);
     if (ctx.state === "suspended") {
-      ctx.resume().catch((err) => {
-        console.warn("[caddy] AudioContext resume failed:", err);
-      });
+      ctx.resume()
+        .then(() => setAudioDebug(`audio: resumed, state=${ctx.state}`))
+        .catch((err) => setAudioDebug(`audio: resume failed: ${(err as Error)?.message || err}`));
     }
   }
 
   async function speakText(text: string) {
     setLastReply(text);
-    if (muted) return;
+    if (muted) {
+      setAudioDebug("audio: muted, skipping");
+      return;
+    }
     const ctx = getAudioContext();
     if (!ctx) {
       setAudioBlocked(true);
+      setAudioDebug("audio: NO AudioContext support");
       return;
     }
     try {
-      // Make sure the context is unlocked before we commit to a fetch.
+      setAudioDebug(`audio: speak start, state=${ctx.state}`);
       if (ctx.state === "suspended") {
         try { await ctx.resume(); } catch { /* fall through */ }
       }
-
+      setAudioDebug(`audio: fetching, state=${ctx.state}`);
       const blob = await api.caddy.fetchSpeech(text);
+      setAudioDebug(`audio: got blob ${blob.size}b, decoding…`);
       const arrayBuffer = await blob.arrayBuffer();
-      // Safari requires the callback form of decodeAudioData; the promise
-      // form was added later. Use the promise where available, fall back
-      // to callbacks otherwise.
       const audioBuffer = await new Promise<AudioBuffer>((resolve, reject) => {
         ctx.decodeAudioData(arrayBuffer, resolve, reject);
       });
+      setAudioDebug(`audio: decoded ${audioBuffer.duration.toFixed(1)}s, state=${ctx.state}`);
 
-      // Stop any previous reply still playing
       if (currentSourceRef.current) {
         try { currentSourceRef.current.stop(); } catch { /* fine */ }
       }
@@ -155,17 +162,20 @@ export default function CaddyPage() {
       source.buffer = audioBuffer;
       source.connect(ctx.destination);
 
-      // If the context never unlocked (no gesture yet), this is what fails.
       if (ctx.state !== "running") {
-        console.warn("[caddy] AudioContext not running, state:", ctx.state);
         setAudioBlocked(true);
+        setAudioDebug(`audio: ctx NOT running (${ctx.state}) — blocked`);
         return;
       }
       source.start(0);
+      source.onended = () => setAudioDebug(`audio: finished playing`);
       currentSourceRef.current = source;
       setAudioBlocked(false);
+      setAudioDebug(`audio: playing ${audioBuffer.duration.toFixed(1)}s`);
     } catch (err) {
-      console.warn("[caddy] TTS playback failed:", (err as Error)?.name, (err as Error)?.message);
+      const e = err as Error;
+      console.warn("[caddy] TTS playback failed:", e?.name, e?.message);
+      setAudioDebug(`audio: ERROR ${e?.name || ""}: ${e?.message || err}`);
       // User can still read the text
     }
   }
@@ -412,6 +422,13 @@ export default function CaddyPage() {
           Caddy&apos;s voice was blocked by your browser. Tap here to enable audio.
         </button>
       )}
+
+      {/* Audio debug strip — TEMPORARY. Shows current state of the TTS pipeline
+          so we can diagnose silence issues without DevTools access. Remove
+          after the audio problem is solved. */}
+      <div className="bg-amber-50 border-b border-amber-300 px-5 py-1 text-[10px] font-mono text-amber-900 flex-shrink-0 truncate">
+        {audioDebug}
+      </div>
 
       {/* Live round status bar — shows as soon as there's any round activity:
           a loaded course, any logged score, or progress past hole 1. */}
