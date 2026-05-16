@@ -20,7 +20,8 @@ export type ChatEvent =
   | { type: "score_logged"; hole: number; score: number; par?: number | null }
   | { type: "drive_inferred"; hole: number; hole_yardage: number; remaining: number; inferred_drive: number }
   | { type: "round_complete"; course_name: string; total_score?: number | null; differential?: number | null; handicap?: number | null }
-  | { type: "weather_alert"; alerts: string[] };
+  | { type: "weather_alert"; alerts: string[] }
+  | { type: "transcript_unclear" };
 
 export type WeatherSnapshot = {
   current?: {

@@ -182,9 +182,11 @@ export default function CaddyPage() {
         setTranscribing(true);
         try {
           const { transcript, reply, round_state, weather: w } = await api.caddy.voice(blob, location);
+          // Skip the user bubble when Whisper didn't catch anything — Caddy
+          // will respond with a "say it again?" message on its own.
           setMessages((m) => [
             ...m,
-            { role: "user", content: transcript },
+            ...(transcript ? [{ role: "user" as const, content: transcript }] : []),
             { role: "assistant", content: reply },
           ]);
           if (round_state) setRoundState(round_state);

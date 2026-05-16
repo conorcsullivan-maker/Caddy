@@ -834,13 +834,22 @@ async def caddy_voice(
     lng: Optional[float] = None,
     user: dict = Depends(get_current_user),
 ):
-    """Audio in → Whisper transcript → full processing pipeline → transcript + response + events."""
+    """Audio in → Whisper transcript → full processing pipeline → transcript + response + events.
+    When Whisper returns a hallucination or silent audio, we respond as if Caddy
+    itself politely asked for a repeat — that's friendlier than a red error banner
+    and matches how a real caddy would handle a missed line."""
     audio_bytes = await audio.read()
     if not audio_bytes:
         raise HTTPException(400, "Empty audio")
     transcript = transcribe_audio(audio_bytes, audio.filename or "audio.webm")
     if not transcript:
-        raise HTTPException(400, "Could not understand audio")
+        return {
+            "transcript": "",
+            "reply": "Didn't catch that — say it again?",
+            "round_state": load_round_state(user["id"]),
+            "events": [{"type": "transcript_unclear"}],
+            "weather": None,
+        }
     result = process_user_message(user, transcript, lat=lat, lng=lng)
     return {"transcript": transcript, **result}
 
