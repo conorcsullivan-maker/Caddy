@@ -183,16 +183,19 @@ def detect_course_note(text: str, round_state: dict) -> Optional[dict]:
         return None
 
     current_hole = round_state.get("current_hole", 1)
-    response = anthropic_client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=60,
-        messages=[{"role": "user", "content": (
-            f'Golfer on hole {current_hole} said: "{text}"\n'
-            'Does this describe a specific physical hazard or trouble area on this hole '
-            '(e.g. water location, bunker position, OB, carry distance to hazard)? '
-            'Return JSON only: {"note": "brief fact under 15 words"} or {"note": null}'
-        )}],
-    )
+    try:
+        response = anthropic_client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=60,
+            messages=[{"role": "user", "content": (
+                f'Golfer on hole {current_hole} said: "{text}"\n'
+                'Does this describe a specific physical hazard or trouble area on this hole '
+                '(e.g. water location, bunker position, OB, carry distance to hazard)? '
+                'Return JSON only: {"note": "brief fact under 15 words"} or {"note": null}'
+            )}],
+        )
+    except Exception:
+        return None
     data = _extract_json(response.content[0].text)
     if not data or not data.get("note"):
         return None
@@ -534,16 +537,19 @@ def detect_and_load_course(
     if len(text.split()) < 3:
         return None
 
-    response = anthropic_client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=30,
-        messages=[{"role": "user", "content": (
-            f'Does this text mention a specific golf course or golf club by name? "{text}"\n'
-            'Examples that qualify: "playing Cypress Point", "about to play Wine Valley", '
-            '"I\'m at Augusta", "round at Pebble", "today at Bandon Dunes". '
-            'If yes, return only the course or club name. If no, return "none".'
-        )}],
-    )
+    try:
+        response = anthropic_client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=30,
+            messages=[{"role": "user", "content": (
+                f'Does this text mention a specific golf course or golf club by name? "{text}"\n'
+                'Examples that qualify: "playing Cypress Point", "about to play Wine Valley", '
+                '"I\'m at Augusta", "round at Pebble", "today at Bandon Dunes". '
+                'If yes, return only the course or club name. If no, return "none".'
+            )}],
+        )
+    except Exception:
+        return None
     result = response.content[0].text.strip()
     if result.lower() in ("none", "no", "") or len(result) < 4:
         return None
@@ -744,33 +750,36 @@ def detect_and_log_score(text: str, round_state: dict) -> Optional[dict]:
     par_block = "\n".join(par_lines) if par_lines else "  (pars unknown)"
     par_info = f"Current hole: {current_hole}.\nHole pars:\n{par_block}"
 
-    response = anthropic_client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=80,
-        messages=[{"role": "user", "content": (
-            f'Golfer said: "{text}"\n{par_info}\n\n'
-            'Is the player reporting their score for a hole?\n'
-            'Return JSON only: {"score": integer_or_null, "hole": integer_or_null}\n\n'
-            'HOLE: If the player names a specific hole ("on the fifth", "hole 4", "the par 3"), '
-            'use that hole. Otherwise assume the current hole.\n\n'
-            'SCORE — translate all common golf jargon. Always compute against the par of the HOLE BEING REPORTED:\n'
-            '  Absolute numbers ("a 5", "shot 4", "took 6", "carded 5") → use the literal number.\n'
-            '  Relative-to-par terms:\n'
-            '    ace / hole in one = 1\n'
-            '    albatross / double eagle = par - 3\n'
-            '    eagle = par - 2\n'
-            '    birdie = par - 1\n'
-            '    par / made par / got par = par\n'
-            '    bogey = par + 1\n'
-            '    double / double bogey = par + 2\n'
-            '    triple / triple bogey = par + 3\n'
-            '    quadruple / quad / quad bogey = par + 4\n'
-            '    snowman = 8 strokes (always 8, regardless of par)\n'
-            '    "N over" / "+N" / "N over par" = par + N\n'
-            '    "N under" / "-N" / "N under par" = par - N\n\n'
-            'If the message is not reporting a hole score, return {"score": null, "hole": null}.'
-        )}],
-    )
+    try:
+        response = anthropic_client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=80,
+            messages=[{"role": "user", "content": (
+                f'Golfer said: "{text}"\n{par_info}\n\n'
+                'Is the player reporting their score for a hole?\n'
+                'Return JSON only: {"score": integer_or_null, "hole": integer_or_null}\n\n'
+                'HOLE: If the player names a specific hole ("on the fifth", "hole 4", "the par 3"), '
+                'use that hole. Otherwise assume the current hole.\n\n'
+                'SCORE — translate all common golf jargon. Always compute against the par of the HOLE BEING REPORTED:\n'
+                '  Absolute numbers ("a 5", "shot 4", "took 6", "carded 5") → use the literal number.\n'
+                '  Relative-to-par terms:\n'
+                '    ace / hole in one = 1\n'
+                '    albatross / double eagle = par - 3\n'
+                '    eagle = par - 2\n'
+                '    birdie = par - 1\n'
+                '    par / made par / got par = par\n'
+                '    bogey = par + 1\n'
+                '    double / double bogey = par + 2\n'
+                '    triple / triple bogey = par + 3\n'
+                '    quadruple / quad / quad bogey = par + 4\n'
+                '    snowman = 8 strokes (always 8, regardless of par)\n'
+                '    "N over" / "+N" / "N over par" = par + N\n'
+                '    "N under" / "-N" / "N under par" = par - N\n\n'
+                'If the message is not reporting a hole score, return {"score": null, "hole": null}.'
+            )}],
+        )
+    except Exception:
+        return None
     data = _extract_json(response.content[0].text)
     if not data:
         return None

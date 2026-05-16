@@ -257,16 +257,30 @@ def extract_scorecard_from_image(image_bytes: bytes, media_type: str = "image/jp
 def caddy_reply(user: dict, conversation_history: list[dict], new_message: str,
                 round_context: str = "") -> str:
     """Send the latest user message to Claude with full context (player + active round)
-    and return the caddy's response."""
+    and return the caddy's response. Falls back to a clear error message if the
+    Anthropic API itself fails (out of credits, rate limit, outage) so the
+    frontend gets a usable reply instead of a generic 500."""
     system = build_system_prompt(user) + (round_context or "")
     messages = conversation_history + [{"role": "user", "content": new_message}]
-    response = anthropic_client.messages.create(
-        model="claude-opus-4-7",
-        max_tokens=400,
-        system=system,
-        messages=messages,
-    )
-    return response.content[0].text
+    try:
+        response = anthropic_client.messages.create(
+            model="claude-opus-4-7",
+            max_tokens=400,
+            system=system,
+            messages=messages,
+        )
+        return response.content[0].text
+    except anthropic.BadRequestError as e:
+        msg = str(e).lower()
+        if "credit balance" in msg or "billing" in msg:
+            return "I'm out of API credits — top up at console.anthropic.com and try again."
+        return f"Anthropic API rejected the request: {e}. Try again in a moment."
+    except anthropic.RateLimitError:
+        return "Rate-limited by Anthropic for a second — try that again in 5–10 seconds."
+    except anthropic.APIError as e:
+        return f"Anthropic API hiccup ({type(e).__name__}). Try again in a moment."
+    except Exception as e:
+        return f"Something went wrong reaching Caddy ({type(e).__name__}: {e}). Try again."
 
 
 # Short strings that are only hallucinations when they ARE the entire transcript
