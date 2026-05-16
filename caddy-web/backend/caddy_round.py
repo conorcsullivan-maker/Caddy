@@ -636,6 +636,17 @@ def detect_and_log_score(text: str, round_state: dict) -> Optional[dict]:
             or matches_relative_number or matches_verb_number):
         return None
 
+    # Helper: pick the hole this report is about. If the player explicitly named
+    # one ("on the fifth"), use that. Otherwise, if Caddy just asked about a
+    # specific missing hole, that's almost certainly what the answer is about.
+    # Only fall back to current_hole if neither applies.
+    def _hole_for_report() -> int:
+        return (
+            _extract_hole_number(text)
+            or round_state.get("pending_hole_question")
+            or round_state.get("current_hole", 1)
+        )
+
     # Fast path A: absolute terms — fixed stroke count regardless of par.
     ABSOLUTE_TERMS = {
         "snowman": 8,
@@ -645,7 +656,7 @@ def detect_and_log_score(text: str, round_state: dict) -> Optional[dict]:
     }
     for term, fixed_score in ABSOLUTE_TERMS.items():
         if term in text_lower:
-            hole_num = _extract_hole_number(text) or round_state.get("current_hole", 1)
+            hole_num = _hole_for_report()
             return {
                 "hole": hole_num,
                 "score": fixed_score,
@@ -674,7 +685,7 @@ def detect_and_log_score(text: str, round_state: dict) -> Optional[dict]:
     ]
     for term, diff in RELATIVE_TERMS:
         if re.search(rf"\b{re.escape(term)}\b", text_lower):
-            hole_num = _extract_hole_number(text) or round_state.get("current_hole", 1)
+            hole_num = _hole_for_report()
             par = get_hole_par(round_state, hole_num)
             if par is None:
                 break  # Need par to compute — fall through to Haiku
@@ -688,7 +699,7 @@ def detect_and_log_score(text: str, round_state: dict) -> Optional[dict]:
     if m:
         score = int(m.group(1))
         if 1 <= score <= 20:
-            hole_num = _extract_hole_number(text) or round_state.get("current_hole", 1)
+            hole_num = _hole_for_report()
             return {
                 "hole": hole_num,
                 "score": score,
@@ -698,13 +709,13 @@ def detect_and_log_score(text: str, round_state: dict) -> Optional[dict]:
     # Fast path D: explicit "N over" / "N under".
     m = re.search(r"\b(\d+)\s+over\b", text_lower)
     if m:
-        hole_num = _extract_hole_number(text) or round_state.get("current_hole", 1)
+        hole_num = _hole_for_report()
         par = get_hole_par(round_state, hole_num)
         if par is not None:
             return {"hole": hole_num, "score": par + int(m.group(1)), "par": par}
     m = re.search(r"\b(\d+)\s+under\b", text_lower)
     if m:
-        hole_num = _extract_hole_number(text) or round_state.get("current_hole", 1)
+        hole_num = _hole_for_report()
         par = get_hole_par(round_state, hole_num)
         if par is not None:
             return {"hole": hole_num, "score": par - int(m.group(1)), "par": par}
@@ -717,7 +728,7 @@ def detect_and_log_score(text: str, round_state: dict) -> Optional[dict]:
     )
     par_on_hole_pattern = re.compile(r"\bpar\s+on\s+(?:the\s+)?\w+")
     if par_score_pattern.search(text_lower) or par_on_hole_pattern.search(text_lower):
-        hole_num = _extract_hole_number(text) or round_state.get("current_hole", 1)
+        hole_num = _hole_for_report()
         par = get_hole_par(round_state, hole_num)
         if par is not None:
             return {"hole": hole_num, "score": par, "par": par}

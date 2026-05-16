@@ -655,9 +655,10 @@ function hasRoundActivity(state: RoundState): boolean {
   return false;
 }
 
-// Per-hole scorecard view shown when the player taps the round bar. Tap any
-// tile to fix a wrong score — the score Caddy logged is sometimes wrong
-// (Haiku mis-parsing), and the player should be able to correct it inline.
+// Per-hole scorecard view shown when the player taps the round bar. Uses
+// traditional scorecard notation: a single circle for birdie, double circle
+// for eagle or better, single square for bogey, double square for double or
+// worse, no marker for par. Tap any tile to fix a wrong score.
 function ScorecardPanel({
   state,
   onEdit,
@@ -666,65 +667,113 @@ function ScorecardPanel({
   onEdit: (hole: number, score: number | null) => void;
 }) {
   const tee = state.tee;
-  // Always render at least 9 tiles so the grid is visible even before scores.
   const holeCount = tee?.holes?.length || 18;
   const scores: (number | null)[] = [];
   for (let i = 0; i < Math.min(holeCount, 18); i++) {
     scores.push(state.hole_scores?.[i] ?? null);
   }
-  const RESULT_LABEL: Record<number, string> = {
-    [-3]: "alb", [-2]: "eag", [-1]: "bird", 0: "par",
-    1: "bog", 2: "dbl", 3: "trip", 4: "quad",
-  };
+
   return (
-    <div className="bg-forest-deep/40 px-5 py-3 border-t border-forest-deep">
+    <div className="bg-forest-deep/40 px-3 py-3 border-t border-forest-deep">
       <div className="max-w-2xl mx-auto">
         <p className="text-[10px] text-cream/50 mb-2 text-center">Tap a hole to fix the score.</p>
-        <div className="grid grid-cols-9 gap-1 text-[10px]">
-          {scores.map((score, i) => {
-            const par = tee?.holes?.[i]?.par;
-            const diff = score != null && par ? score - par : null;
-            const label = diff !== null ? (RESULT_LABEL[diff] ?? `${diff > 0 ? "+" : ""}${diff}`) : "";
-            return (
-              <button
-                key={i}
-                type="button"
-                onClick={() => {
-                  const input = prompt(
-                    `Score for hole ${i + 1}${par ? ` (par ${par})` : ""}? (blank to clear)`,
-                    score == null ? "" : String(score)
-                  );
-                  if (input === null) return; // user hit cancel
-                  if (input.trim() === "") {
-                    onEdit(i + 1, null);
-                    return;
-                  }
-                  const n = parseInt(input, 10);
-                  if (!Number.isNaN(n) && n >= 1 && n <= 20) {
-                    onEdit(i + 1, n);
-                  }
-                }}
-                className={`flex flex-col items-center py-1.5 rounded transition active:scale-95 ${
-                  score == null
-                    ? "bg-cream/5 text-cream/30 hover:bg-cream/10"
-                    : diff !== null && diff < 0
-                    ? "bg-gold/25 text-cream hover:bg-gold/35"
-                    : diff === 0
-                    ? "bg-cream/10 text-cream hover:bg-cream/20"
-                    : "bg-red-900/30 text-cream hover:bg-red-900/45"
-                }`}
-              >
-                <span className="text-[9px] text-cream/60">{i + 1}</span>
-                <span className="text-[14px] font-semibold leading-none mt-0.5">
-                  {score ?? "—"}
-                </span>
-                {label && <span className="text-[9px] text-cream/60 mt-0.5">{label}</span>}
-              </button>
-            );
-          })}
-        </div>
+        <ScorecardRow scores={scores.slice(0, 9)} pars={tee?.holes?.slice(0, 9)} startHole={1} onEdit={onEdit} />
+        <div className="h-1.5" />
+        <ScorecardRow scores={scores.slice(9, 18)} pars={tee?.holes?.slice(9, 18)} startHole={10} onEdit={onEdit} />
       </div>
     </div>
+  );
+}
+
+function ScorecardRow({
+  scores,
+  pars,
+  startHole,
+  onEdit,
+}: {
+  scores: (number | null)[];
+  pars?: { par: number; yardage?: number }[];
+  startHole: number;
+  onEdit: (hole: number, score: number | null) => void;
+}) {
+  return (
+    <div className="grid grid-cols-9 gap-1">
+      {Array.from({ length: 9 }).map((_, i) => {
+        const hole = startHole + i;
+        const score = scores[i] ?? null;
+        const par = pars?.[i]?.par;
+        const diff = score != null && par != null ? score - par : null;
+        return (
+          <ScoreCell
+            key={hole}
+            hole={hole}
+            par={par}
+            score={score}
+            diff={diff}
+            onClick={() => {
+              const input = prompt(
+                `Score for hole ${hole}${par != null ? ` (par ${par})` : ""}? (blank to clear)`,
+                score == null ? "" : String(score)
+              );
+              if (input === null) return;
+              if (input.trim() === "") {
+                onEdit(hole, null);
+                return;
+              }
+              const n = parseInt(input, 10);
+              if (!Number.isNaN(n) && n >= 1 && n <= 20) {
+                onEdit(hole, n);
+              }
+            }}
+          />
+        );
+      })}
+    </div>
+  );
+}
+
+function ScoreCell({
+  hole,
+  par,
+  score,
+  diff,
+  onClick,
+}: {
+  hole: number;
+  par?: number;
+  score: number | null;
+  diff: number | null;
+  onClick: () => void;
+}) {
+  // Traditional scorecard marker around the score number:
+  //   Eagle or better (-2 or less): double circle (gold)
+  //   Birdie (-1):                  single circle (gold)
+  //   Par (0):                      no marker
+  //   Bogey (+1):                   single square (cream/red)
+  //   Double bogey+ (+2 or more):   double square (red)
+  // Empty cell: no marker, dim text.
+  let markClass = "";
+  if (diff != null) {
+    if (diff <= -2) markClass = "rounded-full border-[3px] border-double border-gold";
+    else if (diff === -1) markClass = "rounded-full border-2 border-gold";
+    else if (diff === 0) markClass = "";
+    else if (diff === 1) markClass = "border-2 border-red-300";
+    else markClass = "border-[3px] border-double border-red-400";
+  }
+  const cellBg = diff == null ? "" : diff < 0 ? "text-gold" : diff > 0 ? "text-red-100" : "text-cream";
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="flex flex-col items-center pt-1 pb-1.5 hover:bg-cream/5 rounded transition active:scale-95"
+    >
+      <span className="text-[10px] text-cream/55 mb-1">{hole}</span>
+      <div className={`w-8 h-8 flex items-center justify-center ${markClass}`}>
+        <span className={`text-[14px] font-semibold leading-none ${cellBg}`}>
+          {score ?? "—"}
+        </span>
+      </div>
+    </button>
   );
 }
 
