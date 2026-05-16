@@ -575,11 +575,19 @@ def process_user_message(user: dict, message: str,
     course_loaded_now = False
     course_not_found_query: Optional[str] = None
     course_load_distance: Optional[float] = None
-    if course_load and course_load.get("status") == "loaded":
+    if course_load and course_load.get("status") in ("loaded", "switched"):
+        is_switch = course_load.get("status") == "switched"
         round_state["course"] = course_load["course"]
         round_state["tee"] = course_load["tee"]
-        round_state["started_at"] = round_state.get("started_at") or now_iso()
         round_state["course_confirmed"] = False
+        if is_switch:
+            # Player explicitly named a different course — wipe the old
+            # scorecard since the old course's pars no longer apply.
+            round_state["hole_scores"] = []
+            round_state["current_hole"] = 1
+            round_state["started_at"] = now_iso()
+        else:
+            round_state["started_at"] = round_state.get("started_at") or now_iso()
         course_loaded_now = True
         course_load_distance = course_load.get("distance_miles")
         events.append({

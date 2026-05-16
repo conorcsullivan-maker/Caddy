@@ -533,19 +533,15 @@ def detect_and_load_course(
     - None: no course mention detected
     - {"status": "loaded", "course": ..., "tee": ..., "distance_miles": float|None}
     - {"status": "not_found", "query": "..."}: course mentioned but not in API
+    - {"status": "switched", "course": ..., "tee": ...}: player named a course
+      different from the currently-loaded one — treat as a switch.
     When player_lat/lng are provided, multiple courses sharing a name are ranked
     by proximity so we pick the actual one the player is at.
     """
-    if current_round_state.get("course"):
-        return None  # course already loaded, don't re-detect
     if not anthropic_client:
         return None
-    # No keyword pre-filter when no course is loaded — players phrase course
-    # mentions in too many ways ("I'm at X", "playing X", "about to play X",
-    # "round at X", or just "X today") for a static keyword list to cover.
-    # One Haiku call per message until a course is loaded is negligible cost.
-    # Short messages are very unlikely to contain a course name though, so
-    # skip those to avoid wasting a call on every "thanks" or "ok".
+    # Short messages are very unlikely to contain a course name — skip to
+    # avoid wasting a Haiku call on every "thanks" or "ok".
     if len(text.split()) < 3:
         return None
 
@@ -569,6 +565,29 @@ def detect_and_load_course(
     stated_state = (parsed.get("state") or "").strip().upper()
     if not result or result.lower() in ("none", "no", "null") or len(result) < 4:
         return None
+
+    # If a course is already loaded, decide whether this is a re-mention of
+    # the same course (no-op) or an actual switch (player named a different
+    # course). The previous logic always early-returned, which trapped users
+    # with the wrong course loaded with no way to correct it via natural speech.
+    current_course = current_round_state.get("course")
+    is_switch = False
+    if current_course:
+        current_name = (current_course.get("club_name") or "").lower()
+        loc = current_course.get("location") or {}
+        current_city = (loc.get("city") or "").lower() if isinstance(loc, dict) else ""
+        current_state = (loc.get("state") or "").upper() if isinstance(loc, dict) else ""
+        result_l = result.lower()
+        names_match = result_l in current_name or current_name in result_l
+        # If the player explicitly stated a city/state and it differs from the
+        # loaded course's city/state, that's a switch even if names match.
+        location_mismatch = (
+            (stated_city and current_city and stated_city != current_city)
+            or (stated_state and current_state and stated_state != current_state)
+        )
+        if names_match and not location_mismatch:
+            return None  # same course already loaded — nothing to do
+        is_switch = True
 
     candidates = search_course(result)
     if not candidates:
@@ -633,7 +652,7 @@ def detect_and_load_course(
         return {"status": "not_found", "query": result}
 
     return {
-        "status": "loaded",
+        "status": "switched" if is_switch else "loaded",
         "course": course_data,
         "tee": tee,
         "distance_miles": distance_miles,
