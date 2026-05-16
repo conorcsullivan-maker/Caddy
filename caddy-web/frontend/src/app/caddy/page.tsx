@@ -33,7 +33,6 @@ export default function CaddyPage() {
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
-  const audioElementRef = useRef<HTMLAudioElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -95,70 +94,78 @@ export default function CaddyPage() {
     ta.style.height = `${Math.min(ta.scrollHeight, 160)}px`;
   }, [input]);
 
-  // Reuse the SAME HTMLAudioElement across all playback. iOS Safari grants
-  // playback permission per-element after a successful play during a user
-  // gesture — so priming a fresh element each time doesn't persist the unlock.
-  // One persistent element + we just swap its src.
-  function getOrCreateAudioElement(): HTMLAudioElement {
-    if (!audioElementRef.current) {
-      const a = new Audio();
-      a.addEventListener("error", () => {
-        const err = a.error;
-        if (err) console.warn("[caddy] audio element error:", err.code, err.message);
-      });
-      audioElementRef.current = a;
+  // Web Audio API for TTS playback. iOS Safari's HTMLAudioElement unlock is
+  // per-element and fragile — context unlock is page-wide and persistent.
+  // We create one AudioContext, resume() it on first user gesture, and from
+  // then on every play just decodes + plays through a BufferSource. No
+  // per-element gesture management needed.
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const currentSourceRef = useRef<AudioBufferSourceNode | null>(null);
+
+  function getAudioContext(): AudioContext | null {
+    if (typeof window === "undefined") return null;
+    if (!audioContextRef.current) {
+      const Ctor =
+        window.AudioContext ||
+        (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+      if (!Ctor) return null;
+      audioContextRef.current = new Ctor();
     }
-    return audioElementRef.current;
+    return audioContextRef.current;
   }
 
-  // Verified silent MP3 — 0.04s, ~700 bytes. Plays inaudibly but counts as
-  // a real audio play, which unlocks the element on iOS Safari.
-  const SILENT_MP3 =
-    "data:audio/mp3;base64,SUQzBAAAAAABEVRYWFgAAAAtAAADY29tbWVudABCaWdTb3VuZEJhbmsuY29tIC8gTGFTb25vdGhlcXVlLm9yZwBURU5DAAAAHQAAA1N3aXRjaCBQbHVzIMKpIE5DSCBTb2Z0d2FyZQBUSVQyAAAABgAAAzIyMzUAVFNTRQAAAA8AAANMYXZmNTcuODMuMTAwAAAAAAAAAAAAAAD/80DEAAAAA0gAAAAATEFNRTMuMTAwVVVVVVVVVVVVVUxBTUUzLjEwMFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//sQZAADwnAAf/AAAAIAAA/wAAABAAABLAAAACAAACWAAAAEVVVVVVVVVVVVVVVVVVVVVVVVVV";
-
   function primeAudio() {
-    try {
-      const audio = getOrCreateAudioElement();
-      audio.src = SILENT_MP3;
-      audio.muted = true;
-      audio.play().then(() => {
-        audio.pause();
-        audio.currentTime = 0;
-        audio.muted = false;
-      }).catch((err) => {
-        console.warn("[caddy] audio prime failed:", (err as Error)?.name);
+    const ctx = getAudioContext();
+    if (!ctx) return;
+    if (ctx.state === "suspended") {
+      ctx.resume().catch((err) => {
+        console.warn("[caddy] AudioContext resume failed:", err);
       });
-    } catch (err) {
-      console.warn("[caddy] audio prime threw:", err);
     }
   }
 
   async function speakText(text: string) {
     setLastReply(text);
     if (muted) return;
+    const ctx = getAudioContext();
+    if (!ctx) {
+      setAudioBlocked(true);
+      return;
+    }
     try {
-      const blob = await api.caddy.fetchSpeech(text);
-      const url = URL.createObjectURL(blob);
-      const audio = getOrCreateAudioElement();
-      try {
-        audio.pause();
-        if (audio.src && audio.src.startsWith("blob:")) {
-          URL.revokeObjectURL(audio.src);
-        }
-      } catch { /* fine */ }
-      audio.src = url;
-      try {
-        await audio.play();
-        setAudioBlocked(false);
-      } catch (err) {
-        // Most common cause: mobile Safari autoplay policy blocked playback
-        // because we haven't had a recent user gesture. Surface a tap-to-enable
-        // banner so the player can fix it instead of wondering why Caddy is silent.
-        console.warn("[caddy] audio.play blocked:", (err as Error)?.name, (err as Error)?.message);
-        setAudioBlocked(true);
+      // Make sure the context is unlocked before we commit to a fetch.
+      if (ctx.state === "suspended") {
+        try { await ctx.resume(); } catch { /* fall through */ }
       }
+
+      const blob = await api.caddy.fetchSpeech(text);
+      const arrayBuffer = await blob.arrayBuffer();
+      // Safari requires the callback form of decodeAudioData; the promise
+      // form was added later. Use the promise where available, fall back
+      // to callbacks otherwise.
+      const audioBuffer = await new Promise<AudioBuffer>((resolve, reject) => {
+        ctx.decodeAudioData(arrayBuffer, resolve, reject);
+      });
+
+      // Stop any previous reply still playing
+      if (currentSourceRef.current) {
+        try { currentSourceRef.current.stop(); } catch { /* fine */ }
+      }
+      const source = ctx.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(ctx.destination);
+
+      // If the context never unlocked (no gesture yet), this is what fails.
+      if (ctx.state !== "running") {
+        console.warn("[caddy] AudioContext not running, state:", ctx.state);
+        setAudioBlocked(true);
+        return;
+      }
+      source.start(0);
+      currentSourceRef.current = source;
+      setAudioBlocked(false);
     } catch (err) {
-      console.warn("[caddy] TTS fetch failed:", err);
+      console.warn("[caddy] TTS playback failed:", (err as Error)?.name, (err as Error)?.message);
       // User can still read the text
     }
   }

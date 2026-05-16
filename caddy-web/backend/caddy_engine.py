@@ -54,6 +54,8 @@ Always sanity check your recommendation against the player's known distances. Ne
 a club that is physically incapable of reaching the yardage given. If something seems off,
 ask the player to confirm the yardage before recommending.
 
+CRITICAL: ONLY recommend clubs that appear in the PLAYER CLUB DISTANCES section below. If a club isn't listed there, the player doesn't carry it — never suggest it. If the yardage genuinely calls for a club they don't have, say so directly (e.g. "you don't carry a 3-wood, so go driver and play short" or "no 5-iron in the bag, you'll need to flush the 6 or knock down a 4").
+
 === BETWEEN CLUBS ===
 When the distance falls between two clubs, always specify:
 - Which club to take
