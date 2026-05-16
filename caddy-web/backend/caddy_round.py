@@ -882,8 +882,8 @@ def format_score_context(round_state: dict) -> str:
     status = compute_round_status(round_state)
     if status:
         lines.append("")
-        lines.append(f"ROUND STATUS: {status}")
-        lines.append("When the player asks about their score or you acknowledge a result, use this exact status — do not recompute it.")
+        lines.append(f"ROUND STATUS (authoritative — never recompute): {status}")
+        lines.append("If you reference the round score in ANY response, quote this status verbatim. Do not add, subtract, paraphrase, or invent your own version.")
     logged_set = {h for h, _ in logged}
     max_logged = max(logged_set)
     lines.append(f"Current hole: {round_state.get('current_hole', max_logged + 1)}")

@@ -284,6 +284,17 @@ def is_likely_hallucination(text: str) -> bool:
     non_ascii = sum(1 for c in text if ord(c) > 127)
     if non_ascii / max(len(text), 1) > 0.5:
         return True
+    # Mid-sentence starts on short transcripts ("of armed worker states",
+    # "and then the", etc.) — Whisper grasping at silent audio almost always
+    # picks up phrase fragments rather than full sentences. Real golfer speech
+    # virtually never starts with these conjunctions/prepositions.
+    mid_sentence_starters = (
+        "of ", "and ", "but ", "or ", "so ", "to ", "the ", "a ", "an ",
+        "with ", "for ", "by ", "as ", "from ", "in the ", "on the ",
+    )
+    word_count = len(lower.split())
+    if word_count < 8 and any(lower.startswith(s) for s in mid_sentence_starters):
+        return True
     return False
 
 
