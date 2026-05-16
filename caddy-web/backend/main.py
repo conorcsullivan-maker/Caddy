@@ -687,34 +687,43 @@ def process_user_message(user: dict, message: str,
             1: "bogey", 2: "double bogey", 3: "triple bogey", 4: "quad",
         }.get(_diff, f"{score_just_logged.get('score')}")
         _status = compute_round_status(round_state) or ""
-        # Detect any holes that got skipped — Caddy should ask about them casually.
+        # Detect any holes that got skipped — Caddy should ask about them.
         _scores = round_state.get("hole_scores") or []
         _max_logged = max((i + 1 for i, s in enumerate(_scores) if s is not None), default=0)
         _missing = [i + 1 for i, s in enumerate(_scores[:_max_logged]) if s is None]
-        _missing_hint = ""
+
+        # Build the response rules. If there are gaps in the scorecard, force
+        # a second sentence asking about the missing hole(s) — without this,
+        # Caddy reliably skips the follow-up and the gap persists silently.
+        rules = [
+            "Open with ONE short sentence reacting to THIS hole only. "
+            "Examples: 'Nice par.' / 'Great birdie.' / 'Eagle — clutch.' / "
+            "'Tough one, onto the next.' / 'Shake it off.'",
+            "Do NOT compute or invent the running score. The 'Round status' "
+            "above is the only correct value.",
+            f"If you mention overall round progress, quote it exactly as: "
+            f"\"{_status}\". Never paraphrase, recompute, or approximate.",
+            "Prefer rule 1 alone. Only mention running total if the player asks.",
+        ]
         if _missing:
             _missing_str = ", ".join(str(h) for h in _missing)
-            _missing_hint = (
-                f"\nALSO: hole(s) {_missing_str} have no score logged. After your reaction, casually ask "
-                f"what they made on the missing hole(s) — and IMPORTANT, ask them to include the hole number "
-                f"in their answer so the score lands on the right hole. For example: "
-                f"'Hey, what did you make on {_missing[0]}? Say it like \"birdie on {_missing[0]}\" or "
-                f"\"got a 5 on {_missing[0]}\" so I log it right.' Full words, no abbreviations."
+            rules.append(
+                f"REQUIRED: hole(s) {_missing_str} were never logged. After your reaction sentence, "
+                f"ADD a second sentence asking what they made on the missing hole. Ask them to include "
+                f"the hole number in the answer so it lands on the right row. "
+                f"Example two-sentence reply: 'Tough one, shake it off. By the way, what did you make "
+                f"on hole {_missing[0]}? Say it like \"birdie on {_missing[0]}\" so I log it right.' "
+                f"This second sentence is mandatory — don't skip it."
             )
+
+        rules_str = "\n".join(f"{i}. {r}" for i, r in enumerate(rules, 1))
         round_context += (
             f"\n\nSCORE JUST LOGGED:\n"
             f"  Hole:           {score_just_logged.get('hole')}\n"
             f"  Strokes:        {score_just_logged.get('score')}\n"
             f"  Result:         {_result_label}\n"
             f"  Round status:   {_status}\n"
-            f"\nRESPONSE RULES (follow strictly):\n"
-            f"1. Default response is ONE short sentence reacting to the hole only. Examples:\n"
-            f"     'Nice par.' / 'Great birdie.' / 'Eagle — clutch.' / 'Tough one, onto the next.' / 'Shake it off.'\n"
-            f"2. Do NOT compute or invent the running score. The 'Round status' above is the only correct value.\n"
-            f"3. If you mention overall round progress in your reply, you MUST quote it as exactly: \"{_status}\". "
-            f"Never paraphrase, never compute it yourself, never approximate.\n"
-            f"4. Prefer rule 1 (just react). Only use rule 3 if the player explicitly asks for the running total."
-            f"{_missing_hint}"
+            f"\nRESPONSE RULES (follow strictly):\n{rules_str}"
         )
 
     # 6. Get Claude's reply

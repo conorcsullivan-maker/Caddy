@@ -32,19 +32,30 @@ _ORDINAL_HOLE_NUMS = {
 
 def _extract_hole_number(text: str) -> Optional[int]:
     """Find a hole number referenced in the message ('on 5', 'hole 4',
-    'the seventh', 'on too' for 'on two'). Returns None if nothing matches."""
+    'on hole 4', 'the seventh', 'on too' for 'on two'). If multiple
+    references appear (e.g. "I forgot 5, but on hole 4 I got a birdie"),
+    the LAST one wins — that's almost always the player's final intent
+    after a self-correction. Returns None if nothing matches."""
     t = text.lower()
-    # "on 5", "on hole 5", "hole 4", "on the 7th"
-    m = re.search(r"\b(?:on|hole)\s+(?:the\s+)?(\d{1,2})(?:st|nd|rd|th)?\b", t)
-    if m:
-        n = int(m.group(1))
-        if 1 <= n <= 18:
-            return n
-    # "on the fifth", "hole seven", "on two"
-    m = re.search(r"\b(?:on|hole|the)\s+(?:the\s+)?([a-z]+)\b", t)
-    if m and m.group(1) in _ORDINAL_HOLE_NUMS:
-        return _ORDINAL_HOLE_NUMS[m.group(1)]
-    return None
+    matches: list[int] = []
+    # Unified pattern: (on|hole|the) + optional "the " + optional "hole "
+    # + (digit-with-ordinal-suffix OR word). The optional "hole " between
+    # the prefix and the identifier handles "on hole 4" / "on hole four".
+    pattern = re.compile(
+        r"\b(?:on|hole|the)\s+(?:the\s+)?(?:hole\s+)?"
+        r"(\d{1,2}(?:st|nd|rd|th)?|[a-z]+)\b"
+    )
+    for m in pattern.finditer(t):
+        raw = m.group(1)
+        # Strip ordinal suffix from digit forms ("7th" → "7")
+        digit_match = re.match(r"^(\d+)(?:st|nd|rd|th)?$", raw)
+        if digit_match:
+            n = int(digit_match.group(1))
+            if 1 <= n <= 18:
+                matches.append(n)
+        elif raw in _ORDINAL_HOLE_NUMS:
+            matches.append(_ORDINAL_HOLE_NUMS[raw])
+    return matches[-1] if matches else None
 
 
 def _haversine_miles(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
