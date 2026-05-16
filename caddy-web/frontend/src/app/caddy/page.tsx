@@ -21,7 +21,7 @@ export default function CaddyPage() {
   const [muted, setMuted] = useState(false);
   const [audioBlocked, setAudioBlocked] = useState(false);
   const [lastReply, setLastReply] = useState<string | null>(null);
-  const [audioDebug, setAudioDebug] = useState<string>("audio: idle");
+  const [scorecardOpen, setScorecardOpen] = useState(false);
   const [recording, setRecording] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
   const [roundState, setRoundState] = useState<RoundState>({ hole_scores: [], current_hole: 1 });
@@ -117,43 +117,31 @@ export default function CaddyPage() {
 
   function primeAudio() {
     const ctx = getAudioContext();
-    if (!ctx) {
-      setAudioDebug("audio: NO AudioContext support");
-      return;
-    }
-    setAudioDebug(`audio: prime, state=${ctx.state}`);
+    if (!ctx) return;
     if (ctx.state === "suspended") {
-      ctx.resume()
-        .then(() => setAudioDebug(`audio: resumed, state=${ctx.state}`))
-        .catch((err) => setAudioDebug(`audio: resume failed: ${(err as Error)?.message || err}`));
+      ctx.resume().catch((err) => {
+        console.warn("[caddy] AudioContext resume failed:", err);
+      });
     }
   }
 
   async function speakText(text: string) {
     setLastReply(text);
-    if (muted) {
-      setAudioDebug("audio: muted, skipping");
-      return;
-    }
+    if (muted) return;
     const ctx = getAudioContext();
     if (!ctx) {
       setAudioBlocked(true);
-      setAudioDebug("audio: NO AudioContext support");
       return;
     }
     try {
-      setAudioDebug(`audio: speak start, state=${ctx.state}`);
       if (ctx.state === "suspended") {
         try { await ctx.resume(); } catch { /* fall through */ }
       }
-      setAudioDebug(`audio: fetching, state=${ctx.state}`);
       const blob = await api.caddy.fetchSpeech(text);
-      setAudioDebug(`audio: got blob ${blob.size}b, decoding…`);
       const arrayBuffer = await blob.arrayBuffer();
       const audioBuffer = await new Promise<AudioBuffer>((resolve, reject) => {
         ctx.decodeAudioData(arrayBuffer, resolve, reject);
       });
-      setAudioDebug(`audio: decoded ${audioBuffer.duration.toFixed(1)}s, state=${ctx.state}`);
 
       if (currentSourceRef.current) {
         try { currentSourceRef.current.stop(); } catch { /* fine */ }
@@ -164,18 +152,13 @@ export default function CaddyPage() {
 
       if (ctx.state !== "running") {
         setAudioBlocked(true);
-        setAudioDebug(`audio: ctx NOT running (${ctx.state}) — blocked`);
         return;
       }
       source.start(0);
-      source.onended = () => setAudioDebug(`audio: finished playing`);
       currentSourceRef.current = source;
       setAudioBlocked(false);
-      setAudioDebug(`audio: playing ${audioBuffer.duration.toFixed(1)}s`);
     } catch (err) {
-      const e = err as Error;
-      console.warn("[caddy] TTS playback failed:", e?.name, e?.message);
-      setAudioDebug(`audio: ERROR ${e?.name || ""}: ${e?.message || err}`);
+      console.warn("[caddy] TTS playback failed:", (err as Error)?.name, (err as Error)?.message);
       // User can still read the text
     }
   }
@@ -423,27 +406,29 @@ export default function CaddyPage() {
         </button>
       )}
 
-      {/* Audio debug strip — TEMPORARY. Shows current state of the TTS pipeline
-          so we can diagnose silence issues without DevTools access. Remove
-          after the audio problem is solved. */}
-      <div className="bg-amber-50 border-b border-amber-300 px-5 py-1 text-[10px] font-mono text-amber-900 flex-shrink-0 truncate">
-        {audioDebug}
-      </div>
 
-      {/* Live round status bar — shows as soon as there's any round activity:
-          a loaded course, any logged score, or progress past hole 1. */}
+      {/* Live round status bar — shows as soon as there's any round activity.
+          Tap to expand a hole-by-hole scorecard view. */}
       {hasRoundActivity(roundState) && (
-        <div className="bg-forest text-cream px-5 py-1.5 border-b border-forest-deep flex-shrink-0">
-          <div className="max-w-2xl mx-auto w-full text-[11px] flex items-center gap-3">
-            <span className="eyebrow text-gold flex-shrink-0">Round</span>
-            <span className="text-cream/95 truncate">
-              {roundState.course
-                ? shortCourseName(roundState.course.club_name) +
-                  (roundState.tee?.tee_name ? ` · ${roundState.tee.tee_name}` : "")
-                : "No course loaded"}
-              {` · ${formatHoleStatus(roundState)}`}
-            </span>
-          </div>
+        <div className="bg-forest text-cream border-b border-forest-deep flex-shrink-0">
+          <button
+            type="button"
+            onClick={() => setScorecardOpen((o) => !o)}
+            className="w-full px-5 py-1.5 flex items-center"
+          >
+            <div className="max-w-2xl mx-auto w-full text-[11px] flex items-center gap-3">
+              <span className="eyebrow text-gold flex-shrink-0">Round</span>
+              <span className="text-cream/95 truncate flex-1 text-left">
+                {roundState.course
+                  ? shortCourseName(roundState.course.club_name) +
+                    (roundState.tee?.tee_name ? ` · ${roundState.tee.tee_name}` : "")
+                  : "No course loaded"}
+                {` · ${formatHoleStatus(roundState)}`}
+              </span>
+              <span className="text-cream/50 text-[10px]">{scorecardOpen ? "▴" : "▾"}</span>
+            </div>
+          </button>
+          {scorecardOpen && <ScorecardPanel state={roundState} />}
         </div>
       )}
 
@@ -656,6 +641,60 @@ function hasRoundActivity(state: RoundState): boolean {
   if (state.hole_scores?.some((s) => s !== null && s !== undefined)) return true;
   if ((state.current_hole || 1) > 1) return true;
   return false;
+}
+
+// Per-hole scorecard view shown when the player taps the round bar. Surfaces
+// the actual logged numbers so wrong entries (a 4 logged as a 5, etc.) can
+// be spotted in real time instead of being inferred from Caddy's recap text.
+function ScorecardPanel({ state }: { state: RoundState }) {
+  const scores = state.hole_scores || [];
+  const tee = state.tee;
+  if (scores.length === 0) {
+    return (
+      <div className="bg-forest-deep/40 px-5 py-3 border-t border-forest-deep">
+        <p className="text-[11px] text-cream/70 max-w-2xl mx-auto">
+          No scores logged yet. Tell Caddy your hole score and it&apos;ll show up here.
+        </p>
+      </div>
+    );
+  }
+  const RESULT_LABEL: Record<number, string> = {
+    [-3]: "alb", [-2]: "eag", [-1]: "bird", 0: "par",
+    1: "bog", 2: "dbl", 3: "trip", 4: "quad",
+  };
+  return (
+    <div className="bg-forest-deep/40 px-5 py-3 border-t border-forest-deep">
+      <div className="max-w-2xl mx-auto">
+        <div className="grid grid-cols-9 gap-1 text-[10px]">
+          {scores.slice(0, 18).map((score, i) => {
+            const par = tee?.holes?.[i]?.par;
+            const diff = score != null && par ? score - par : null;
+            const label = diff !== null ? (RESULT_LABEL[diff] ?? `${diff > 0 ? "+" : ""}${diff}`) : "";
+            return (
+              <div
+                key={i}
+                className={`flex flex-col items-center py-1.5 rounded ${
+                  score == null
+                    ? "bg-cream/5 text-cream/30"
+                    : diff !== null && diff < 0
+                    ? "bg-gold/25 text-cream"
+                    : diff === 0
+                    ? "bg-cream/10 text-cream"
+                    : "bg-red-900/30 text-cream"
+                }`}
+              >
+                <span className="text-[9px] text-cream/60">{i + 1}</span>
+                <span className="text-[14px] font-semibold leading-none mt-0.5">
+                  {score ?? "—"}
+                </span>
+                {label && <span className="text-[9px] text-cream/60 mt-0.5">{label}</span>}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function formatHoleStatus(state: RoundState): string {
