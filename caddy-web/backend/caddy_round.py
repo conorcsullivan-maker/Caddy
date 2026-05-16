@@ -367,7 +367,8 @@ SCORE_TRIGGER_KEYWORDS = [
     "double", "triple", "quadruple", "quad", "snowman", "par",
     "ace", "hole in one", "hole-in-one",
     # Common score-reporting verbs
-    "i shot", "i made", "i got", "i had", "i took", "i carded",
+    "i shot", "i made", "i got", "i had", "i took", "i carded", "i went", "i scored",
+    "birdied", "eagled", "bogeyed", "aced", "doubled", "tripled",
     "made par", "got par", "shot par", "carded", "posted",
     # Relative-to-par numeric phrasing
     "over", "under", "over par", "under par",
@@ -690,17 +691,30 @@ def detect_and_log_score(text: str, round_state: dict) -> Optional[dict]:
     ABSOLUTE_TERMS = {
         "snowman": 8,
         "ace": 1,
+        "aced": 1,
         "hole in one": 1,
         "hole-in-one": 1,
     }
+    # Negation patterns — skip an absolute term if it's preceded by "didn't",
+    # "was not", etc. within the last 30 characters. Without this, messages
+    # like "I didn't get a hole-in-one" would log a score of 1.
+    NEGATION_PATTERNS = (
+        "didn't ", "did not ", "wasn't ", "was not ",
+        "isn't ", "is not ", "not an ", "not a ", "no ",
+    )
     for term, fixed_score in ABSOLUTE_TERMS.items():
-        if term in text_lower:
-            hole_num = _hole_for_report()
-            return {
-                "hole": hole_num,
-                "score": fixed_score,
-                "par": get_hole_par(round_state, hole_num),
-            }
+        idx = text_lower.find(term)
+        if idx < 0:
+            continue
+        preceding = text_lower[max(0, idx - 30):idx]
+        if any(neg in preceding for neg in NEGATION_PATTERNS):
+            continue  # negated — player is saying they did NOT get this
+        hole_num = _hole_for_report()
+        return {
+            "hole": hole_num,
+            "score": fixed_score,
+            "par": get_hole_par(round_state, hole_num),
+        }
 
     # Fast path B: relative-to-par terms. Compute the stroke count from the
     # par of the referenced hole in code — never let Haiku do this arithmetic.
@@ -715,10 +729,15 @@ def detect_and_log_score(text: str, round_state: dict) -> Optional[dict]:
         ("quad bogey", 4),
         ("albatross", -3),
         ("quadruple", 4),
+        ("eagled", -2),
         ("eagle", -2),
+        ("birdied", -1),
         ("birdie", -1),
+        ("bogeyed", 1),
         ("bogey", 1),
+        ("tripled", 3),
         ("triple", 3),
+        ("doubled", 2),
         ("double", 2),
         ("quad", 4),
     ]
@@ -730,14 +749,22 @@ def detect_and_log_score(text: str, round_state: dict) -> Optional[dict]:
                 break  # Need par to compute — fall through to Haiku
             return {"hole": hole_num, "score": par + diff, "par": par}
 
-    # Fast path C: explicit absolute number ("got a 4", "shot 5", "carded a 6", etc).
+    # Fast path C: explicit absolute number ("got a 4", "shot 5", "carded a 6",
+    # "I got a three", "had eight"). Accepts digits OR word numbers.
     abs_pattern = re.compile(
-        r"\b(?:got|shot|made|took|carded|posted|had|scored)\s+(?:an?\s+)?(\d{1,2})\b"
+        r"\b(?:got|shot|made|took|carded|posted|had|scored|went)\s+(?:an?\s+)?"
+        r"(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen)\b"
     )
+    _NUM_WORDS = {
+        "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+        "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+        "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15,
+    }
     m = abs_pattern.search(text_lower)
     if m:
-        score = int(m.group(1))
-        if 1 <= score <= 20:
+        token = m.group(1)
+        score = int(token) if token.isdigit() else _NUM_WORDS.get(token)
+        if score and 1 <= score <= 20:
             hole_num = _hole_for_report()
             return {
                 "hole": hole_num,
