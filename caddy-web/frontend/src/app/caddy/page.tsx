@@ -19,6 +19,8 @@ export default function CaddyPage() {
   const [error, setError] = useState<string | null>(null);
 
   const [muted, setMuted] = useState(false);
+  const [audioBlocked, setAudioBlocked] = useState(false);
+  const [lastReply, setLastReply] = useState<string | null>(null);
   const [recording, setRecording] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
   const [roundState, setRoundState] = useState<RoundState>({ hole_scores: [], current_hole: 1 });
@@ -94,6 +96,7 @@ export default function CaddyPage() {
   }, [input]);
 
   async function speakText(text: string) {
+    setLastReply(text);
     if (muted) return;
     try {
       const blob = await api.caddy.fetchSpeech(text);
@@ -104,12 +107,16 @@ export default function CaddyPage() {
       }
       const audio = new Audio(url);
       audioElementRef.current = audio;
-      audio.play().catch((err) => {
+      try {
+        await audio.play();
+        setAudioBlocked(false);
+      } catch (err) {
         // Most common cause: mobile Safari autoplay policy blocked playback
-        // because we haven't had a recent user gesture. Log it so we can see
-        // in DevTools instead of failing silently.
-        console.warn("[caddy] audio.play blocked:", err?.name, err?.message);
-      });
+        // because we haven't had a recent user gesture. Surface a tap-to-enable
+        // banner so the player can fix it instead of wondering why Caddy is silent.
+        console.warn("[caddy] audio.play blocked:", (err as Error)?.name, (err as Error)?.message);
+        setAudioBlocked(true);
+      }
     } catch (err) {
       console.warn("[caddy] TTS fetch failed:", err);
       // User can still read the text
@@ -334,6 +341,20 @@ export default function CaddyPage() {
         <div className="bg-cream/60 border-b border-line px-5 py-2 text-[11px] text-muted text-center flex-shrink-0">
           Location off — Caddy won&apos;t have live wind/weather. Enable in browser settings to fix.
         </div>
+      )}
+
+      {audioBlocked && !muted && lastReply && (
+        <button
+          type="button"
+          onClick={() => {
+            // Retrying play inside a direct tap handler unblocks Safari's
+            // autoplay policy for the rest of the session.
+            if (lastReply) speakText(lastReply);
+          }}
+          className="bg-gold/15 border-b border-gold/40 px-5 py-2 text-[12px] text-forest text-center flex-shrink-0 hover:bg-gold/25 transition w-full"
+        >
+          Caddy&apos;s voice was blocked by your browser. Tap here to enable audio.
+        </button>
       )}
 
       {/* Live round status bar — shows as soon as there's any round activity:
