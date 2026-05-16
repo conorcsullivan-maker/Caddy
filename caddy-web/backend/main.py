@@ -602,9 +602,6 @@ def process_user_message(user: dict, message: str,
     score_just_logged: Optional[dict] = None
     if score_result:
         apply_score_to_round_state(round_state, score_result["hole"], score_result["score"])
-        # Clear any pending hole question — the answer (or an unrelated score)
-        # has now arrived, so the question is no longer pending.
-        round_state.pop("pending_hole_question", None)
         events.append({"type": "score_logged", **score_result})
         score_just_logged = score_result
 
@@ -697,13 +694,12 @@ def process_user_message(user: dict, message: str,
         _missing_hint = ""
         if _missing:
             _missing_str = ", ".join(str(h) for h in _missing)
-            # Track the pending question so the player's next score answer
-            # (without an explicit hole reference) gets logged to THIS hole.
-            round_state["pending_hole_question"] = _missing[0]
             _missing_hint = (
                 f"\nALSO: hole(s) {_missing_str} have no score logged. After your reaction, casually ask "
-                f"what they made on the missing hole(s) in one short sentence using full words, like "
-                f"'Hey, what did you make on {_missing[0]}? Never logged it.' No abbreviations."
+                f"what they made on the missing hole(s) — and IMPORTANT, ask them to include the hole number "
+                f"in their answer so the score lands on the right hole. For example: "
+                f"'Hey, what did you make on {_missing[0]}? Say it like \"birdie on {_missing[0]}\" or "
+                f"\"got a 5 on {_missing[0]}\" so I log it right.' Full words, no abbreviations."
             )
         round_context += (
             f"\n\nSCORE JUST LOGGED:\n"

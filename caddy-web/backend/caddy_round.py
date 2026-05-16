@@ -637,15 +637,13 @@ def detect_and_log_score(text: str, round_state: dict) -> Optional[dict]:
         return None
 
     # Helper: pick the hole this report is about. If the player explicitly named
-    # one ("on the fifth"), use that. Otherwise, if Caddy just asked about a
-    # specific missing hole, that's almost certainly what the answer is about.
-    # Only fall back to current_hole if neither applies.
+    # one ("on the fifth"), use that. Otherwise default to the current hole.
+    # We don't try to infer from prior Caddy questions anymore — that mechanism
+    # silently misrouted scores when the player said something score-like that
+    # wasn't actually answering a question. The player must be explicit when
+    # backfilling a hole that isn't current.
     def _hole_for_report() -> int:
-        return (
-            _extract_hole_number(text)
-            or round_state.get("pending_hole_question")
-            or round_state.get("current_hole", 1)
-        )
+        return _extract_hole_number(text) or round_state.get("current_hole", 1)
 
     # Fast path A: absolute terms — fixed stroke count regardless of par.
     ABSOLUTE_TERMS = {
