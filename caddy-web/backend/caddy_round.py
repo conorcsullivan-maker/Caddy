@@ -636,10 +636,7 @@ def detect_and_log_score(text: str, round_state: dict) -> Optional[dict]:
             or matches_relative_number or matches_verb_number):
         return None
 
-    # Fast path: truly unambiguous absolute terms. These ALWAYS map to a fixed
-    # stroke count regardless of par, so we can resolve them without trusting
-    # Haiku to do absolute arithmetic. The original snowman-on-a-par-5 bug
-    # came from Haiku interpreting "snowman" as par+4 instead of 8 strokes.
+    # Fast path A: absolute terms — fixed stroke count regardless of par.
     ABSOLUTE_TERMS = {
         "snowman": 8,
         "ace": 1,
@@ -654,6 +651,70 @@ def detect_and_log_score(text: str, round_state: dict) -> Optional[dict]:
                 "score": fixed_score,
                 "par": get_hole_par(round_state, hole_num),
             }
+
+    # Fast path B: relative-to-par terms. Compute the stroke count from the
+    # par of the referenced hole in code — never let Haiku do this arithmetic.
+    # Haiku has been hallucinating values like 1 for "birdie" despite the
+    # prompt clearly saying "birdie = par - 1".
+    # Order matters: longer phrases first so "double bogey" beats "double",
+    # "double eagle" beats "eagle", etc.
+    RELATIVE_TERMS = [
+        ("double eagle", -3),
+        ("triple bogey", 3),
+        ("double bogey", 2),
+        ("quad bogey", 4),
+        ("albatross", -3),
+        ("quadruple", 4),
+        ("eagle", -2),
+        ("birdie", -1),
+        ("bogey", 1),
+        ("triple", 3),
+        ("double", 2),
+        ("quad", 4),
+    ]
+    for term, diff in RELATIVE_TERMS:
+        if re.search(rf"\b{re.escape(term)}\b", text_lower):
+            hole_num = _extract_hole_number(text) or round_state.get("current_hole", 1)
+            par = get_hole_par(round_state, hole_num)
+            if par is None:
+                break  # Need par to compute — fall through to Haiku
+            return {"hole": hole_num, "score": par + diff, "par": par}
+
+    # Fast path C: explicit absolute number ("got a 4", "shot 5", "carded a 6", etc).
+    abs_pattern = re.compile(
+        r"\b(?:got|shot|made|took|carded|posted|had|scored)\s+(?:an?\s+)?(\d{1,2})\b"
+    )
+    m = abs_pattern.search(text_lower)
+    if m:
+        score = int(m.group(1))
+        if 1 <= score <= 20:
+            hole_num = _extract_hole_number(text) or round_state.get("current_hole", 1)
+            return {
+                "hole": hole_num,
+                "score": score,
+                "par": get_hole_par(round_state, hole_num),
+            }
+
+    # Fast path D: explicit "N over" / "N under".
+    m = re.search(r"\b(\d+)\s+over\b", text_lower)
+    if m:
+        hole_num = _extract_hole_number(text) or round_state.get("current_hole", 1)
+        par = get_hole_par(round_state, hole_num)
+        if par is not None:
+            return {"hole": hole_num, "score": par + int(m.group(1)), "par": par}
+    m = re.search(r"\b(\d+)\s+under\b", text_lower)
+    if m:
+        hole_num = _extract_hole_number(text) or round_state.get("current_hole", 1)
+        par = get_hole_par(round_state, hole_num)
+        if par is not None:
+            return {"hole": hole_num, "score": par - int(m.group(1)), "par": par}
+
+    # "made par" / "got par" / "for par" — straight par.
+    if re.search(r"\b(?:made|got|for|shot)\s+par\b", text_lower):
+        hole_num = _extract_hole_number(text) or round_state.get("current_hole", 1)
+        par = get_hole_par(round_state, hole_num)
+        if par is not None:
+            return {"hole": hole_num, "score": par, "par": par}
 
     current_hole = round_state.get("current_hole", 1)
     # Give Haiku the par of every hole, not just current. Players reference holes

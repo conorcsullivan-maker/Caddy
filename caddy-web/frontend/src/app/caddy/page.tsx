@@ -428,7 +428,19 @@ export default function CaddyPage() {
               <span className="text-cream/50 text-[10px]">{scorecardOpen ? "▴" : "▾"}</span>
             </div>
           </button>
-          {scorecardOpen && <ScorecardPanel state={roundState} />}
+          {scorecardOpen && (
+            <ScorecardPanel
+              state={roundState}
+              onEdit={async (hole, score) => {
+                try {
+                  const { round_state } = await api.caddy.editScore(hole, score);
+                  setRoundState(round_state);
+                } catch (err) {
+                  setError(err instanceof Error ? err.message : "Couldn't update score");
+                }
+              }}
+            />
+          )}
         </div>
       )}
 
@@ -643,20 +655,22 @@ function hasRoundActivity(state: RoundState): boolean {
   return false;
 }
 
-// Per-hole scorecard view shown when the player taps the round bar. Surfaces
-// the actual logged numbers so wrong entries (a 4 logged as a 5, etc.) can
-// be spotted in real time instead of being inferred from Caddy's recap text.
-function ScorecardPanel({ state }: { state: RoundState }) {
-  const scores = state.hole_scores || [];
+// Per-hole scorecard view shown when the player taps the round bar. Tap any
+// tile to fix a wrong score — the score Caddy logged is sometimes wrong
+// (Haiku mis-parsing), and the player should be able to correct it inline.
+function ScorecardPanel({
+  state,
+  onEdit,
+}: {
+  state: RoundState;
+  onEdit: (hole: number, score: number | null) => void;
+}) {
   const tee = state.tee;
-  if (scores.length === 0) {
-    return (
-      <div className="bg-forest-deep/40 px-5 py-3 border-t border-forest-deep">
-        <p className="text-[11px] text-cream/70 max-w-2xl mx-auto">
-          No scores logged yet. Tell Caddy your hole score and it&apos;ll show up here.
-        </p>
-      </div>
-    );
+  // Always render at least 9 tiles so the grid is visible even before scores.
+  const holeCount = tee?.holes?.length || 18;
+  const scores: (number | null)[] = [];
+  for (let i = 0; i < Math.min(holeCount, 18); i++) {
+    scores.push(state.hole_scores?.[i] ?? null);
   }
   const RESULT_LABEL: Record<number, string> = {
     [-3]: "alb", [-2]: "eag", [-1]: "bird", 0: "par",
@@ -665,22 +679,39 @@ function ScorecardPanel({ state }: { state: RoundState }) {
   return (
     <div className="bg-forest-deep/40 px-5 py-3 border-t border-forest-deep">
       <div className="max-w-2xl mx-auto">
+        <p className="text-[10px] text-cream/50 mb-2 text-center">Tap a hole to fix the score.</p>
         <div className="grid grid-cols-9 gap-1 text-[10px]">
-          {scores.slice(0, 18).map((score, i) => {
+          {scores.map((score, i) => {
             const par = tee?.holes?.[i]?.par;
             const diff = score != null && par ? score - par : null;
             const label = diff !== null ? (RESULT_LABEL[diff] ?? `${diff > 0 ? "+" : ""}${diff}`) : "";
             return (
-              <div
+              <button
                 key={i}
-                className={`flex flex-col items-center py-1.5 rounded ${
+                type="button"
+                onClick={() => {
+                  const input = prompt(
+                    `Score for hole ${i + 1}${par ? ` (par ${par})` : ""}? (blank to clear)`,
+                    score == null ? "" : String(score)
+                  );
+                  if (input === null) return; // user hit cancel
+                  if (input.trim() === "") {
+                    onEdit(i + 1, null);
+                    return;
+                  }
+                  const n = parseInt(input, 10);
+                  if (!Number.isNaN(n) && n >= 1 && n <= 20) {
+                    onEdit(i + 1, n);
+                  }
+                }}
+                className={`flex flex-col items-center py-1.5 rounded transition active:scale-95 ${
                   score == null
-                    ? "bg-cream/5 text-cream/30"
+                    ? "bg-cream/5 text-cream/30 hover:bg-cream/10"
                     : diff !== null && diff < 0
-                    ? "bg-gold/25 text-cream"
+                    ? "bg-gold/25 text-cream hover:bg-gold/35"
                     : diff === 0
-                    ? "bg-cream/10 text-cream"
-                    : "bg-red-900/30 text-cream"
+                    ? "bg-cream/10 text-cream hover:bg-cream/20"
+                    : "bg-red-900/30 text-cream hover:bg-red-900/45"
                 }`}
               >
                 <span className="text-[9px] text-cream/60">{i + 1}</span>
@@ -688,7 +719,7 @@ function ScorecardPanel({ state }: { state: RoundState }) {
                   {score ?? "—"}
                 </span>
                 {label && <span className="text-[9px] text-cream/60 mt-0.5">{label}</span>}
-              </div>
+              </button>
             );
           })}
         </div>

@@ -485,6 +485,27 @@ def get_weather(lat: float, lng: float, user: dict = Depends(get_current_user)):
     return {"weather": fetch_weather(lat, lng)}
 
 
+class ScoreEditRequest(BaseModel):
+    hole: int = Field(ge=1, le=18)
+    score: Optional[int] = Field(default=None, ge=1, le=20)
+
+
+@app.post("/api/caddy/edit-score")
+def edit_score(payload: ScoreEditRequest, user: dict = Depends(get_current_user)):
+    """Manually override or clear a hole score in the active round. Returns
+    the updated round state so the UI re-renders immediately."""
+    state = load_round_state(user["id"])
+    if not state.get("tee"):
+        raise HTTPException(400, "No active round")
+    hole_scores = state.get("hole_scores") or []
+    while len(hole_scores) < payload.hole:
+        hole_scores.append(None)
+    hole_scores[payload.hole - 1] = payload.score
+    state["hole_scores"] = hole_scores
+    save_round_state(user["id"], state)
+    return {"round_state": state}
+
+
 @app.post("/api/caddy/reset")
 def reset_history(user: dict = Depends(get_current_user)):
     """Archive the current conversation as 'casual' and start fresh."""

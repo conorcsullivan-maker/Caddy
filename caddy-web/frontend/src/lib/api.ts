@@ -181,6 +181,11 @@ export const api = {
       request<{ weather: WeatherSnapshot | null }>(
         `/api/caddy/weather?lat=${lat}&lng=${lng}`
       ),
+    editScore: (hole: number, score: number | null) =>
+      request<{ round_state: RoundState }>("/api/caddy/edit-score", {
+        method: "POST",
+        body: JSON.stringify({ hole, score }),
+      }),
     reset: () =>
       request<{ status: string; archived_conversation_id?: number | null }>(
         "/api/caddy/reset",
