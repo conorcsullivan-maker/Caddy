@@ -40,6 +40,12 @@ CLUB_LABEL_MAP = {
     "Hybrid": "Hybrid", "3Hybrid": "3-hybrid", "4Hybrid": "4-hybrid", "5Hybrid": "5-hybrid",
 }
 
+# Minimum number of shots needed before a Trackman average is considered
+# trustworthy enough to override the player's stated bag distance.
+# Below this, the data is noted but Caddy should keep using the stated value
+# (one bad session — fatigue, mood, conditions — shouldn't rewrite reality).
+MIN_SHOTS_FOR_RELIABLE_AVERAGE = 10
+
 
 # ────────────────────────────────────────────────────────────
 # URL → report ID → JSON
@@ -138,7 +144,8 @@ def summarize_trackman_session(session: dict) -> tuple[Optional[str], int]:
         mean = sum(carries) / len(carries) if carries else 0
         stddev = (sum((c - mean) ** 2 for c in carries) / len(carries)) ** 0.5 if carries else 0
 
-        lines.append(f"{club_label} ({n} shots)")
+        reliability = "RELIABLE" if n >= MIN_SHOTS_FOR_RELIABLE_AVERAGE else "SMALL SAMPLE — defer to stated bag distance"
+        lines.append(f"{club_label} ({n} shots — {reliability})")
         if carry is not None:
             lines.append(f"  Carry:       avg {carry:.0f} yd  |  best {best_carry:.0f} yd  |  consistency ±{stddev:.0f} yd")
         if total is not None:
@@ -202,16 +209,22 @@ EXISTING TENDENCIES ON FILE:
 NEW TRACKMAN SESSION DATA:
 {session_data_str}
 
+SHOT-COUNT RELIABILITY RULE (very important):
+Each club in the Trackman data above is flagged either RELIABLE (≥{MIN_SHOTS_FOR_RELIABLE_AVERAGE} shots in this session) or SMALL SAMPLE.
+
+- For RELIABLE clubs: treat the Trackman averages as the source of truth. Update the player's profile to match.
+- For SMALL SAMPLE clubs: DO NOT override the player's stated bag distance from a tiny sample. A single tired session can produce a 30-yard short driver that isn't representative. Note the data ("only 4 shots, directional only — keep relying on your stated distance for in-round picks") but explicitly tell the caddy not to use it as the new reality. Suggest the player log more reps with that club to confirm.
+
 Write an updated player tendencies summary that the AI caddy can use during real rounds. Merge the new data with what's already on file — don't throw out prior observations, refine them. Include:
 
-1. Real average carry distances per club (use the new data, not the player's estimates)
-2. Consistency per club (the spread tells you which clubs are reliable)
-3. Miss patterns — direction (left/right) and shape (face-to-path tells you draw/fade tendency)
-4. Notable swing tendencies (smash factor reliability, spin rate concerns, launch angle)
-5. Which clubs are strongest and which need work
+1. Real average carry distances per RELIABLE club (use the new data)
+2. Small-sample clubs flagged with the shot count and a note to keep using the stated value
+3. Consistency per club where the sample is large enough to mean something
+4. Miss patterns — direction (left/right) and shape (face-to-path tells you draw/fade tendency)
+5. Notable swing tendencies (smash factor reliability, spin rate concerns, launch angle) where the sample supports it
 6. How this session confirms, refines, or updates the existing profile
 
-Write in second person ("Your 7-iron averages 138 yards with a slight push right..."), factual, useful for in-round decision making. Around 200 words."""
+Write in second person ("Your 7-iron averages 138 yards over 14 shots — confident in that number..."), factual, useful for in-round decision making. Around 200 words."""
 
     try:
         response = anthropic_client.messages.create(
