@@ -495,6 +495,9 @@ function RecentRounds({
 }
 
 function PastConversations({ conversations }: { conversations: ArchivedConversation[] }) {
+  const [showAll, setShowAll] = useState(false);
+  const INITIAL_COUNT = 5;
+
   if (conversations.length === 0) {
     return <Empty text="No past conversations yet. Every chat with Caddy is archived here, even casual ones." />;
   }
@@ -504,40 +507,55 @@ function PastConversations({ conversations }: { conversations: ArchivedConversat
     if (isNaN(d.getTime())) return date;
     return d.toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
   }
+
+  const visible = showAll ? conversations : conversations.slice(0, INITIAL_COUNT);
+  const hidden = conversations.length - INITIAL_COUNT;
+
   return (
-    <div className="bg-paper border border-line rounded-2xl divide-y divide-line">
-      {conversations.map((c) => (
-        <Link
-          key={c.id}
-          href={`/conversations/${c.id}`}
-          className="block px-5 py-3 hover:bg-cream/40 transition"
-        >
-          <div className="flex items-center justify-between gap-3">
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-2 mb-0.5">
-                <span className={`text-[10px] eyebrow px-2 py-0.5 rounded-full ${
-                  c.kind === "round" ? "bg-forest/10 text-forest" : "bg-gold/10 text-gold"
-                }`}>
-                  {c.kind === "round" ? "Round" : "Chat"}
-                </span>
-                {c.course_name && (
-                  <span className="text-[13px] text-forest truncate">{c.course_name}</span>
-                )}
+    <div>
+      <div className="bg-paper border border-line rounded-2xl divide-y divide-line">
+        {visible.map((c) => (
+          <Link
+            key={c.id}
+            href={`/conversations/${c.id}`}
+            className="block px-5 py-3 hover:bg-cream/40 transition"
+          >
+            <div className="flex items-center justify-between gap-3">
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2 mb-0.5">
+                  <span className={`text-[10px] eyebrow px-2 py-0.5 rounded-full ${
+                    c.kind === "round" ? "bg-forest/10 text-forest" : "bg-gold/10 text-gold"
+                  }`}>
+                    {c.kind === "round" ? "Round" : "Chat"}
+                  </span>
+                  {c.course_name && (
+                    <span className="text-[13px] text-forest truncate">{c.course_name}</span>
+                  )}
+                </div>
+                <p className="text-[11px] text-muted">{fmt(c.ended_at)}</p>
               </div>
-              <p className="text-[11px] text-muted">{fmt(c.ended_at)}</p>
+              {c.total_score != null && (
+                <div className="text-right flex-shrink-0">
+                  <p className="text-[16px] font-semibold text-forest leading-none">{c.total_score}</p>
+                  {c.round_metadata?.differential != null && (
+                    <p className="text-[10px] text-muted mt-0.5">diff {c.round_metadata.differential.toFixed(1)}</p>
+                  )}
+                </div>
+              )}
+              <span className="text-muted/50 text-sm">→</span>
             </div>
-            {c.total_score != null && (
-              <div className="text-right flex-shrink-0">
-                <p className="text-[16px] font-semibold text-forest leading-none">{c.total_score}</p>
-                {c.round_metadata?.differential != null && (
-                  <p className="text-[10px] text-muted mt-0.5">diff {c.round_metadata.differential.toFixed(1)}</p>
-                )}
-              </div>
-            )}
-            <span className="text-muted/50 text-sm">→</span>
-          </div>
-        </Link>
-      ))}
+          </Link>
+        ))}
+      </div>
+      {hidden > 0 && (
+        <button
+          type="button"
+          onClick={() => setShowAll((s) => !s)}
+          className="w-full mt-3 text-[12px] eyebrow text-muted hover:text-forest transition py-2 border border-line border-dashed rounded-xl"
+        >
+          {showAll ? "Show fewer" : `Show ${hidden} more`}
+        </button>
+      )}
     </div>
   );
 }
