@@ -467,6 +467,77 @@ def complete_setup(payload: BagSetupRequest, user: dict = Depends(get_current_us
     return {"user": user_dict(row)}
 
 
+@app.post("/api/me/trackman")
+async def upload_trackman(
+    url: Optional[str] = Form(None),
+    csv_file: Optional[UploadFile] = File(None),
+    user: dict = Depends(get_current_user),
+):
+    """Ingest a Trackman session — from a web report URL or a CSV upload —
+    and update the player's tendencies summary. New session data is MERGED
+    with prior tendencies, not overwritten, so the summary builds up over time."""
+    from caddy_trackman import (
+        fetch_trackman_report, summarize_trackman_session,
+        parse_trackman_csv_text, generate_tendencies_summary,
+    )
+
+    url_clean = (url or "").strip()
+    if not url_clean and not csv_file:
+        raise HTTPException(400, "Provide either a Trackman report URL or a CSV file.")
+
+    # Parse the input into a flat string we can hand to Claude.
+    session_data_str: Optional[str] = None
+    shot_count = 0
+
+    if url_clean:
+        session = fetch_trackman_report(url_clean)
+        if not session:
+            raise HTTPException(
+                400,
+                "Couldn't load that Trackman report. Double-check the URL or paste the report ID instead.",
+            )
+        session_data_str, shot_count = summarize_trackman_session(session)
+        if not session_data_str:
+            raise HTTPException(400, "The Trackman report loaded but contained no shot data.")
+
+    elif csv_file:
+        raw = await csv_file.read()
+        try:
+            csv_text = raw.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            csv_text = raw.decode("latin-1", errors="ignore")
+        session_data_str, shot_count = parse_trackman_csv_text(csv_text)
+        if not session_data_str:
+            raise HTTPException(400, "Couldn't parse that CSV — make sure it's a Trackman export.")
+
+    # Ask Claude to merge the new session with existing tendencies.
+    first_name = (user.get("full_name") or "Player").split()[0]
+    new_summary = generate_tendencies_summary(
+        first_name=first_name,
+        existing_summary=user.get("tendencies_summary"),
+        session_data_str=session_data_str,
+    )
+    if not new_summary:
+        raise HTTPException(
+            502,
+            "Trackman data parsed, but the tendencies summary couldn't be generated. "
+            "Anthropic API might be unavailable — try again in a moment.",
+        )
+
+    with db() as conn:
+        conn.execute(
+            "UPDATE users SET tendencies_summary = ? WHERE id = ?",
+            (new_summary, user["id"]),
+        )
+        row = conn.execute("SELECT * FROM users WHERE id = ?", (user["id"],)).fetchone()
+
+    return {
+        "user": user_dict(row),
+        "shot_count": shot_count,
+        "tendencies_summary": new_summary,
+    }
+
+
 # ────────────────────────────────────────────────────────────
 # Caddy chat endpoints
 # ────────────────────────────────────────────────────────────

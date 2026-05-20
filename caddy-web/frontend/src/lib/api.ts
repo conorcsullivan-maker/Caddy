@@ -165,6 +165,26 @@ export const api = {
       body: JSON.stringify(payload),
     }),
 
+  uploadTrackman: async (input: { url?: string; csvFile?: File }) => {
+    const form = new FormData();
+    if (input.url) form.append("url", input.url);
+    if (input.csvFile) form.append("csv_file", input.csvFile);
+    const res = await fetch(`${API_BASE}/api/me/trackman`, {
+      method: "POST",
+      credentials: "include",
+      body: form,
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || `Trackman upload failed (${res.status})`);
+    }
+    return res.json() as Promise<{
+      user: User;
+      shot_count: number;
+      tendencies_summary: string;
+    }>;
+  },
+
   deleteRound: (index: number) =>
     request<{ status: string; rounds_remaining: number; handicap_index: number | null }>(
       `/api/me/rounds/${index}`,
