@@ -87,6 +87,11 @@ export type UserEngagement = {
   clubs_with_distance: number;
   rounds_count: number;
   trackman_sessions: number;
+  // True when trackman_sessions was inferred from a tendencies_summary
+  // containing Trackman-specific phrasing rather than from a tracked
+  // session ID. Pre-today uploads fall into this category — we know they
+  // happened but don't know the exact count.
+  trackman_backfilled: boolean;
   has_tendencies: boolean;
   last_activity: string | null;
 };

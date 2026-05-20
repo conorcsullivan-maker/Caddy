@@ -1363,10 +1363,30 @@ def list_all_users(user: dict = Depends(require_admin)):
         except Exception:
             trackman_sessions = 0
 
+        # Backfill detection: trackman_session_ids was added today, so
+        # uploads from before that aren't tracked by ID. We can still detect
+        # them by content-sniffing the existing tendencies_summary for
+        # Trackman-specific phrasing that round-completion summaries don't
+        # produce (smash factor, spin rate, face-to-path, launch angle).
+        # When the heuristic fires, count as ≥1 legacy session and flag so
+        # the admin UI can show "uploaded" instead of a misleading exact count.
+        trackman_backfilled = False
+        if trackman_sessions == 0:
+            summary = (d.get("tendencies_summary") or "").lower()
+            legacy_signals = (
+                "trackman", "smash factor", "smash 1.", "spin rate",
+                "face-to-path", "face to path", "launch angle", "club path",
+                "carry: avg", "consistency ±",
+            )
+            if summary and any(s in summary for s in legacy_signals):
+                trackman_sessions = 1
+                trackman_backfilled = True
+
         engagement = {
             "clubs_with_distance": clubs_with_distance,
             "rounds_count": rounds_count,
             "trackman_sessions": trackman_sessions,
+            "trackman_backfilled": trackman_backfilled,
             "has_tendencies": bool(d.get("tendencies_summary")),
             "last_activity": last_activity_by_user.get(d["id"]),
         }

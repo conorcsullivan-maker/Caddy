@@ -53,9 +53,11 @@ function EngagementSummary({
         ok={engagement.trackman_sessions > 0}
         label="Trackman"
         value={
-          engagement.trackman_sessions > 0
-            ? `${engagement.trackman_sessions} session${engagement.trackman_sessions > 1 ? "s" : ""}`
-            : "none"
+          engagement.trackman_sessions === 0
+            ? "none"
+            : engagement.trackman_backfilled
+            ? "uploaded"
+            : `${engagement.trackman_sessions} session${engagement.trackman_sessions > 1 ? "s" : ""}`
         }
       />
       <EngagementCell
