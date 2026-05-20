@@ -1401,6 +1401,94 @@ def list_all_users(user: dict = Depends(require_admin)):
     return {"users": out}
 
 
+@app.get("/api/admin/export.csv")
+def export_beta_data(admin: dict = Depends(require_admin)):
+    """One-row-per-user CSV dump of beta engagement data — signup dates,
+    activation funnel status, round/Trackman counts, last activity. Lets
+    Conor or Drew pull a snapshot for pitch decks or cohort analysis
+    without re-engineering or running ad-hoc SQL.
+
+    Everything in here is already shown live in /admin; this endpoint just
+    serializes it so it can be downloaded as a spreadsheet. Personal
+    content (scores, tendencies prose) is still excluded — only the
+    engagement metrics are exported."""
+    import csv as _csv
+    import io as _io
+
+    with db() as conn:
+        rows = conn.execute("""
+            SELECT id, username, full_name, email, phone, status, is_admin, onboarded,
+                   created_at, approved_at, handicap_index,
+                   bag, rounds, tendencies_summary, trackman_session_ids
+            FROM users ORDER BY created_at ASC
+        """).fetchall()
+        activity_rows = conn.execute("""
+            SELECT user_id, MAX(ended_at) AS last_activity, COUNT(*) AS conversation_count
+            FROM conversations GROUP BY user_id
+        """).fetchall()
+    activity_by_user = {
+        r["user_id"]: {"last": r["last_activity"], "count": r["conversation_count"]}
+        for r in activity_rows
+    }
+
+    buf = _io.StringIO()
+    writer = _csv.writer(buf)
+    writer.writerow([
+        "user_id", "username", "full_name", "email", "status", "is_admin",
+        "onboarded", "created_at", "approved_at", "handicap_index",
+        "clubs_in_bag", "rounds_played", "trackman_sessions",
+        "trackman_uploaded", "has_tendencies",
+        "total_conversations", "last_activity",
+    ])
+    for r in rows:
+        d = dict(r)
+        try:
+            bag = json.loads(d.get("bag") or "{}")
+            clubs_in_bag = sum(1 for v in bag.values() if v)
+        except Exception:
+            clubs_in_bag = 0
+        try:
+            rounds = json.loads(d.get("rounds") or "[]")
+            rounds_count = len(rounds)
+        except Exception:
+            rounds_count = 0
+        try:
+            tm_ids = json.loads(d.get("trackman_session_ids") or "[]")
+            tm_count = len(tm_ids)
+        except Exception:
+            tm_count = 0
+        # Same backfill heuristic as the engagement endpoint — pre-dedupe
+        # uploads detected via tendencies_summary content.
+        summary = (d.get("tendencies_summary") or "").lower()
+        legacy_signals = (
+            "trackman", "smash factor", "smash 1.", "spin rate",
+            "face-to-path", "face to path", "launch angle", "club path",
+            "carry: avg", "consistency ±",
+        )
+        legacy_uploaded = bool(summary and any(s in summary for s in legacy_signals))
+        trackman_uploaded = tm_count > 0 or legacy_uploaded
+
+        activity = activity_by_user.get(d["id"], {"last": "", "count": 0})
+        writer.writerow([
+            d["id"], d["username"], d["full_name"], d.get("email", ""),
+            d["status"], 1 if d.get("is_admin") else 0,
+            1 if d.get("onboarded") else 0,
+            d.get("created_at", ""), d.get("approved_at", ""),
+            d.get("handicap_index") or "",
+            clubs_in_bag, rounds_count, tm_count,
+            1 if trackman_uploaded else 0,
+            1 if d.get("tendencies_summary") else 0,
+            activity["count"], activity["last"] or "",
+        ])
+
+    filename = f"caddy_beta_{now_iso()[:10]}.csv"
+    return FastAPIResponse(
+        content=buf.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @app.post("/api/admin/approve/{user_id}")
 def approve_user(user_id: int, admin: dict = Depends(require_admin)):
     new_pin = generate_pin()

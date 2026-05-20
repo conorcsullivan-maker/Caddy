@@ -324,7 +324,19 @@ export default function AdminDashboard() {
               <div className="mb-10">
                 <div className="flex items-baseline justify-between mb-4">
                   <h2 className="wordmark text-[28px] text-forest">Active users</h2>
-                  <span className="eyebrow text-muted">{activeUsers.length}</span>
+                  <div className="flex items-center gap-3">
+                    {/* CSV export — one row per user, engagement metrics only,
+                        no scores or tendencies prose. Snapshot grabable for
+                        pitch decks or cohort analysis at any time. */}
+                    <a
+                      href="/api/admin/export.csv"
+                      className="text-[11px] eyebrow text-muted hover:text-forest transition px-3 py-1 border border-line rounded-full"
+                      title="Download per-user engagement snapshot as CSV"
+                    >
+                      Export CSV
+                    </a>
+                    <span className="eyebrow text-muted">{activeUsers.length}</span>
+                  </div>
                 </div>
                 <div className="bg-paper border border-line rounded-2xl divide-y divide-line">
                   {activeUsers.map((u) => (
