@@ -85,14 +85,18 @@ CRITICAL: ONLY recommend clubs that appear in the PLAYER CLUB DISTANCES section 
 
 DATA SOURCE PRIORITY for club distances — tiered confidence:
 
-Trackman data accumulates across sessions and earns trust by volume. The PLAYER HISTORY & TENDENCIES section will tell you the cumulative shot count and confidence tier for each club. Apply this hierarchy on every club pick:
+Real data accumulates from TWO sources and they're POOLED together for confidence:
+  (a) Trackman sessions (uploaded — typically more precise, but conditions vary)
+  (b) The PLAYER ON-COURSE LOG section above (every drive inferred from "hole yardage minus remaining yardage", logged automatically as you play)
 
-- HIGH CONFIDENCE (≥250 cumulative shots): The Trackman number is the player's real distance. Use it as canonical, override any conflicting bag number.
-- MEDIUM CONFIDENCE (50–249 cumulative shots): Trust the Trackman number as the working distance. If it diverges sharply (more than ~20%) from the player's stated bag value, mention the gap and let the player decide which to plan around for this shot.
-- LOW CONFIDENCE / small sample (10–49 cumulative shots): The Trackman data is directional only. Use the player's STATED bag distance for club picks. You can mention what the limited data suggests ("only 22 shots logged on driver, showing 245 — small sample, treating your stated 285 as the real number until more reps").
-- NO TRACKMAN DATA: The PLAYER CLUB DISTANCES section is canonical.
+For confidence, add the cumulative shot count from BOTH sources for a given club. Apply this hierarchy on every club pick:
 
-Never let one bad session overwrite a player's reality. A player who's hit their driver 340 yards in their life has done that; a 4-shot tired-arm session at 175 doesn't undo it. Confidence comes from volume.
+- HIGH CONFIDENCE (≥250 combined shots): The pooled Trackman + on-course average IS the player's real distance. Canonical. Override any conflicting bag number.
+- MEDIUM CONFIDENCE (50–249 combined shots): Trust the pooled average as the working distance. If it diverges sharply (more than ~20%) from the player's stated bag value, mention the gap and let the player decide which to plan around for this shot.
+- LOW CONFIDENCE / small sample (10–49 combined shots): The data is directional only. Use the player's STATED bag distance for club picks. You can mention what the limited data suggests ("23 drives logged on course averaging 245 — small sample, treating your stated 285 as the real number until more reps").
+- NO REAL DATA: The PLAYER CLUB DISTANCES section is canonical.
+
+Trackman data tends to be more precise (controlled conditions), but the on-course log is also real data — it reflects how the player actually plays under real conditions and pressure. Pool them. Never let one bad session overwrite a player's reality — a player who's hit their driver 340 yards has done that; a 4-shot tired-arm session at 175 doesn't undo it. Confidence comes from volume across both sources.
 
 === BETWEEN CLUBS ===
 When the distance falls between two clubs, always specify:
@@ -190,6 +194,8 @@ def build_system_prompt(user: dict) -> str:
     else:
         rounds_str = "No rounds logged."
 
+    on_course_str = _format_on_course_log(user.get("on_course_shots") or {})
+
     profile_section = f"""
 
 === PLAYER PROFILE ===
@@ -202,6 +208,9 @@ Iron miss: {iron_miss}
 === PLAYER CLUB DISTANCES ===
 {bag_str}
 
+=== PLAYER ON-COURSE LOG ===
+{on_course_str}
+
 === PLAYER HISTORY & TENDENCIES ===
 {tendencies}
 
@@ -209,6 +218,37 @@ Iron miss: {iron_miss}
 {rounds_str}
 """
     return BASE_PROMPT + profile_section
+
+
+def _format_on_course_log(log: dict) -> str:
+    """Render the cumulative on-course shot log as a per-club summary.
+    These counts FEED THE SAME TIER SYSTEM as Trackman — combine them when
+    judging confidence. A player with 30 driver shots from Trackman + 25
+    drives logged on course is 55 shots total = MEDIUM CONFIDENCE."""
+    if not log:
+        return "No on-course shots logged yet. Once the player tells Caddy their remaining yardage on a known hole, every drive will accumulate here."
+    lines = []
+    for club, b in log.items():
+        n = b.get("count") or 0
+        if n < 1:
+            continue
+        total = b.get("total_carry") or 0
+        avg = round(total / n) if n else 0
+        # Variance from running sum-of-squares
+        sum_sq = b.get("sum_sq") or 0
+        var = max((sum_sq / n) - (avg * avg), 0)
+        sd = round(var ** 0.5)
+        left = b.get("left") or 0
+        right = b.get("right") or 0
+        center = b.get("center") or 0
+        miss_str = ""
+        directional = left + right + center
+        if directional > 0:
+            miss_str = f", direction: {center}C/{left}L/{right}R"
+        lines.append(
+            f"- {club}: {n} shots, avg {avg} yd, ±{sd} yd spread, best {b.get('best')} / worst {b.get('worst')}{miss_str}"
+        )
+    return "\n".join(lines) if lines else "No on-course shots logged yet."
 
 
 def _extract_json(text: str):

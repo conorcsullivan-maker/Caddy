@@ -152,6 +152,7 @@ def init_db():
         "ALTER TABLE users ADD COLUMN referral TEXT",
         "ALTER TABLE users ADD COLUMN conversation_history TEXT",
         "ALTER TABLE users ADD COLUMN active_round_state TEXT",
+        "ALTER TABLE users ADD COLUMN on_course_shots TEXT",
     ):
         try:
             c.execute(col_def)
@@ -201,11 +202,58 @@ def generate_token() -> str:
     return secrets.token_urlsafe(32)
 
 
+def record_on_course_shot(
+    user_id: int,
+    club: str,
+    distance: int,
+    direction: Optional[str] = None,
+) -> None:
+    """Append an on-course shot to the user's cumulative log. Updates running
+    stats per club so the tendencies tier can later be computed from the
+    combined Trackman + on-course pool. `direction` is "left" | "right" |
+    "center" | None when unknown."""
+    with db() as conn:
+        row = conn.execute(
+            "SELECT on_course_shots FROM users WHERE id = ?",
+            (user_id,),
+        ).fetchone()
+        if not row:
+            return
+        try:
+            log = json.loads(row["on_course_shots"]) if row["on_course_shots"] else {}
+        except Exception:
+            log = {}
+
+        bucket = log.get(club) or {
+            "count": 0,
+            "total_carry": 0,
+            "sum_sq": 0,   # for variance
+            "best": 0,
+            "worst": 9999,
+            "left": 0,
+            "right": 0,
+            "center": 0,
+        }
+        bucket["count"] += 1
+        bucket["total_carry"] += distance
+        bucket["sum_sq"] += distance * distance
+        bucket["best"] = max(bucket["best"], distance)
+        bucket["worst"] = min(bucket["worst"], distance)
+        if direction in ("left", "right", "center"):
+            bucket[direction] += 1
+        log[club] = bucket
+
+        conn.execute(
+            "UPDATE users SET on_course_shots = ? WHERE id = ?",
+            (json.dumps(log), user_id),
+        )
+
+
 def user_dict(row: sqlite3.Row) -> dict:
     """Convert DB row to safe dict (no pin_hash)."""
     d = dict(row)
     d.pop("pin_hash", None)
-    for json_field in ("bag", "rounds"):
+    for json_field in ("bag", "rounds", "on_course_shots"):
         if d.get(json_field):
             try:
                 d[json_field] = json.loads(d[json_field])
@@ -684,10 +732,19 @@ def process_user_message(user: dict, message: str,
         events.append({"type": "score_logged", **score_result})
         score_just_logged = score_result
 
-    # 4. Drive distance inference
+    # 4. Drive distance inference. Each inferred drive also accumulates into the
+    # player's on-course log so it counts toward the confidence tier alongside
+    # any Trackman data — confidence comes from any combination of session +
+    # course data, not Trackman alone.
     drive_result = infer_drive_distance(message, round_state)
     if drive_result:
         events.append({"type": "drive_inferred", **drive_result})
+        try:
+            inferred = drive_result.get("inferred_drive")
+            if isinstance(inferred, (int, float)) and 50 <= inferred <= 400:
+                record_on_course_shot(user["id"], "driver", int(inferred))
+        except Exception as e:
+            print(f"[on-course] driver log failed: {e}")
 
     # 4b. Passive course note extraction (silent — player never sees this)
     note_result = detect_course_note(message, round_state)
