@@ -19,10 +19,10 @@ const CLUBS: { key: string; label: string; range: [number, number]; placeholder:
   { key: "7-iron",         label: "7-iron",         range: [50, 210],  placeholder: "e.g. 160" },
   { key: "8-iron",         label: "8-iron",         range: [40, 190],  placeholder: "e.g. 150" },
   { key: "9-iron",         label: "9-iron",         range: [40, 170],  placeholder: "e.g. 135" },
-  { key: "pitching_wedge", label: "Pitching wedge", range: [30, 150],  placeholder: "e.g. 120" },
-  { key: "gap_wedge",      label: "Gap wedge",      range: [30, 140],  placeholder: "e.g. 105" },
-  { key: "sand_wedge",     label: "Sand wedge",     range: [20, 130],  placeholder: "e.g. 90" },
-  { key: "lob_wedge",      label: "Lob wedge",      range: [20, 120],  placeholder: "e.g. 70" },
+  { key: "pitching_wedge", label: "Pitching wedge (44–48°)", range: [30, 150],  placeholder: "e.g. 120" },
+  { key: "gap_wedge",      label: "Gap wedge (50–52°)",      range: [30, 140],  placeholder: "e.g. 105" },
+  { key: "sand_wedge",     label: "Sand wedge (54–56°)",     range: [20, 130],  placeholder: "e.g. 90" },
+  { key: "lob_wedge",      label: "Lob wedge (58–62°)",      range: [20, 120],  placeholder: "e.g. 70" },
 ];
 
 // Slug a user-typed label into a stable bag key. Avoids collisions by
@@ -273,10 +273,15 @@ export default function BagSetupPage() {
               </div>
             )}
 
+            <p className="mt-3 text-[11px] text-muted/80 leading-relaxed">
+              If your wedges are labeled by loft instead of name (50°, 54°, 58°, 60°, etc.) or
+              you carry anything unconventional, add them below with the degree as the name —
+              Caddy will treat them as full clubs.
+            </p>
             <button
               type="button"
               onClick={addCustomClub}
-              className="mt-3 w-full text-[12px] eyebrow text-muted hover:text-forest transition py-2 border border-line border-dashed rounded-xl"
+              className="mt-2 w-full text-[12px] eyebrow text-muted hover:text-forest transition py-2 border border-line border-dashed rounded-xl"
             >
               + Add another club
             </button>
