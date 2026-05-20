@@ -67,6 +67,22 @@ export type Round = {
   differential?: number | null;
 };
 
+export type ShotBucket = {
+  count: number;
+  total_carry: number;
+  sum_sq: number;
+  best: number;
+  worst: number;
+  left: number;
+  right: number;
+  center: number;
+};
+
+export type ClubShotStats = {
+  trackman?: ShotBucket;
+  course?: ShotBucket;
+};
+
 export type User = {
   id: number;
   username: string;
@@ -82,6 +98,7 @@ export type User = {
   home_course?: string | null;
   handicap_index?: number | null;
   tendencies_summary?: string | null;
+  shot_stats?: Record<string, ClubShotStats>;
   rounds?: Round[];
 };
 
