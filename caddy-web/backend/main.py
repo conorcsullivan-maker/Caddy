@@ -154,6 +154,7 @@ def init_db():
         "ALTER TABLE users ADD COLUMN active_round_state TEXT",
         "ALTER TABLE users ADD COLUMN on_course_shots TEXT",
         "ALTER TABLE users ADD COLUMN shot_stats TEXT",
+        "ALTER TABLE users ADD COLUMN trackman_session_ids TEXT",
     ):
         try:
             c.execute(col_def)
@@ -621,6 +622,7 @@ async def upload_trackman(
     from caddy_trackman import (
         fetch_trackman_report, summarize_trackman_session,
         parse_trackman_csv_text, generate_tendencies_summary,
+        extract_report_id,
     )
 
     url_clean = (url or "").strip()
@@ -632,6 +634,8 @@ async def upload_trackman(
     session_data_str: Optional[str] = None
     shot_count = 0
     per_club_stats: dict = {}
+    report_id: Optional[str] = None  # only set for URL uploads
+    is_duplicate = False
 
     if url_clean:
         session = fetch_trackman_report(url_clean)
@@ -640,6 +644,7 @@ async def upload_trackman(
                 400,
                 "Couldn't load that Trackman report. Double-check the URL or paste the report ID instead.",
             )
+        report_id = extract_report_id(url_clean)
         session_data_str, shot_count, per_club_stats = summarize_trackman_session(session)
         if not session_data_str:
             raise HTTPException(400, "The Trackman report loaded but contained no shot data.")
@@ -654,10 +659,37 @@ async def upload_trackman(
         if not session_data_str:
             raise HTTPException(400, "Couldn't parse that CSV — make sure it's a Trackman export.")
 
-    # Merge this session's structured per-club stats into the user's shot_stats
-    # FIRST, so the cumulative count is up-to-date before we ask Claude to write
-    # the qualitative narrative.
-    record_trackman_session_stats(user["id"], per_club_stats)
+    # Dedupe by Trackman session ID. If this URL's session is already on file,
+    # skip the structured-stats merge — re-uploading the same session must not
+    # double-count. The narrative still gets re-generated so the player can
+    # safely re-process if Claude was unavailable last time. CSV uploads have
+    # no canonical ID so they always merge (we trust the player not to re-upload
+    # the same CSV).
+    if report_id:
+        with db() as conn:
+            row = conn.execute(
+                "SELECT trackman_session_ids FROM users WHERE id = ?",
+                (user["id"],),
+            ).fetchone()
+        existing_ids: list[str] = []
+        if row and row["trackman_session_ids"]:
+            try:
+                existing_ids = json.loads(row["trackman_session_ids"]) or []
+            except Exception:
+                existing_ids = []
+        if report_id in existing_ids:
+            is_duplicate = True
+        else:
+            existing_ids.append(report_id)
+            with db() as conn:
+                conn.execute(
+                    "UPDATE users SET trackman_session_ids = ? WHERE id = ?",
+                    (json.dumps(existing_ids), user["id"]),
+                )
+
+    # Only merge structured stats if this isn't a duplicate session.
+    if not is_duplicate:
+        record_trackman_session_stats(user["id"], per_club_stats)
 
     # Ask Claude to update the qualitative tendencies narrative (patterns,
     # miss shapes, swing observations — NOT numeric averages).
@@ -683,6 +715,7 @@ async def upload_trackman(
         "user": user_dict(row),
         "shot_count": shot_count,
         "tendencies_summary": new_summary,
+        "duplicate": is_duplicate,
     }
 
 

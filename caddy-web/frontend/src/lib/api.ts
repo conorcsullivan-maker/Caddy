@@ -199,6 +199,7 @@ export const api = {
       user: User;
       shot_count: number;
       tendencies_summary: string;
+      duplicate?: boolean;
     }>;
   },
 

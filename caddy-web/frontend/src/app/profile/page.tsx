@@ -511,11 +511,18 @@ function TrackmanUpload({
         csvFile: file || undefined,
       });
       onUploaded(result.user);
-      setSuccess(
-        `Got it — ${result.shot_count} shots analyzed. ${
-          hasExisting ? "Tendencies updated above." : "Tendencies summary written above."
-        }`
-      );
+      if (result.duplicate) {
+        setSuccess(
+          `You've already uploaded this session — no double-counting. ` +
+          `Notes refreshed above with the current ${result.shot_count}-shot read.`
+        );
+      } else {
+        setSuccess(
+          `Got it — ${result.shot_count} shots analyzed. ${
+            hasExisting ? "Tendencies updated above." : "Tendencies summary written above."
+          }`
+        );
+      }
       setUrl("");
       setFile(null);
     } catch (err) {
