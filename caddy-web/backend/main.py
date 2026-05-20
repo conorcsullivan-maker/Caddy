@@ -348,7 +348,7 @@ def user_dict(row: sqlite3.Row) -> dict:
     """Convert DB row to safe dict (no pin_hash)."""
     d = dict(row)
     d.pop("pin_hash", None)
-    for json_field in ("bag", "rounds", "on_course_shots", "shot_stats"):
+    for json_field in ("bag", "rounds", "on_course_shots", "shot_stats", "trackman_session_ids"):
         if d.get(json_field):
             try:
                 d[json_field] = json.loads(d[json_field])
@@ -928,12 +928,17 @@ def process_user_message(user: dict, message: str,
             )
         round_context += f"\n\nNOTE: Course just auto-loaded: {_course.get('club_name')}{_loc_str}. {_trust_note}"
     elif course_not_found_query:
-        # Course was mentioned but lookup failed — offer the two escape hatches casually.
+        # Course was mentioned but lookup failed — make the scorecard-photo
+        # option crystal clear because it unlocks all the course intelligence
+        # (yardages, hazards, par per hole). Player should still be able to
+        # decline and play without it.
         round_context += (
             f"\n\nNOTE: Player mentioned a course (\"{course_not_found_query}\") but I couldn't find it in the database. "
-            f"Briefly let them know in one sentence, then offer two options casually: snap a photo of the scorecard "
-            f"(camera button in chat), or just play and tell you yardages as you go. Don't make a big deal of it — "
-            f"the course is a nice-to-have, not a blocker."
+            f"Say so in one sentence and EXPLICITLY OFFER the scorecard photo path: \"If you snap a photo of the "
+            f"scorecard with the camera button below, I can pull the hole yardages, par, and hazards from it and give "
+            f"you much better advice the rest of the round. Otherwise, no worries — just call out your distances as "
+            f"we go and we'll play it by feel.\" Make the value prop of the photo upload clear (better advice with "
+            f"the data, fine without it). Don't beg — say it once, let them choose."
         )
     elif course_rejected:
         # Player pushed back on the auto-loaded course — clear it and let them choose what's next.
@@ -1319,13 +1324,61 @@ def list_pending(user: dict = Depends(require_admin)):
 
 @app.get("/api/admin/users")
 def list_all_users(user: dict = Depends(require_admin)):
+    """Returns each user plus engagement metrics: how many rounds they've
+    played, whether Trackman data has been uploaded, when they were last
+    active. Numbers only — no personal stats like scores or tendencies."""
     with db() as conn:
         rows = conn.execute("""
             SELECT id, username, full_name, email, phone, status, is_admin, onboarded,
-                   created_at, approved_at, handicap_index
+                   created_at, approved_at, handicap_index,
+                   bag, rounds, tendencies_summary, trackman_session_ids
             FROM users ORDER BY created_at DESC
         """).fetchall()
-    return {"users": [dict(r) for r in rows]}
+        # Pull last-activity date per user from the conversations archive
+        # (the most recent conversation any user has ended).
+        activity_rows = conn.execute("""
+            SELECT user_id, MAX(ended_at) AS last_activity
+            FROM conversations GROUP BY user_id
+        """).fetchall()
+    last_activity_by_user = {r["user_id"]: r["last_activity"] for r in activity_rows}
+
+    out = []
+    for r in rows:
+        d = dict(r)
+        # Compute engagement metrics — keep this strictly numerical/boolean,
+        # never expose individual scores or the player's tendencies prose.
+        try:
+            bag = json.loads(d.get("bag") or "{}")
+            clubs_with_distance = sum(1 for v in bag.values() if v)
+        except Exception:
+            clubs_with_distance = 0
+        try:
+            rounds = json.loads(d.get("rounds") or "[]")
+            rounds_count = len(rounds)
+        except Exception:
+            rounds_count = 0
+        try:
+            tm_ids = json.loads(d.get("trackman_session_ids") or "[]")
+            trackman_sessions = len(tm_ids)
+        except Exception:
+            trackman_sessions = 0
+
+        engagement = {
+            "clubs_with_distance": clubs_with_distance,
+            "rounds_count": rounds_count,
+            "trackman_sessions": trackman_sessions,
+            "has_tendencies": bool(d.get("tendencies_summary")),
+            "last_activity": last_activity_by_user.get(d["id"]),
+        }
+        # Strip the raw fields we used to compute engagement so they don't
+        # leak personal content (rounds list, tendencies prose) to the admin view.
+        d.pop("bag", None)
+        d.pop("rounds", None)
+        d.pop("tendencies_summary", None)
+        d.pop("trackman_session_ids", None)
+        d["engagement"] = engagement
+        out.append(d)
+    return {"users": out}
 
 
 @app.post("/api/admin/approve/{user_id}")

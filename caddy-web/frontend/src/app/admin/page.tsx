@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { api, type PendingUser, type User } from "@/lib/api";
+import { api, type PendingUser, type User, type UserEngagement } from "@/lib/api";
 
 type Granted = { username: string; pin: string } | null;
 
@@ -17,6 +17,77 @@ function StatusBadge({ status }: { status: string }) {
     <span className={`text-[10px] eyebrow px-2 py-1 rounded-full ${colors[status] || colors.rejected}`}>
       {status}
     </span>
+  );
+}
+
+// Inline engagement summary shown under each active user. Purely numerical /
+// boolean — no scores or tendencies prose, per Conor's spec. The point is
+// admins can see at a glance how deep into the funnel each user is.
+function EngagementSummary({
+  onboarded,
+  engagement,
+}: {
+  onboarded: boolean;
+  engagement: UserEngagement;
+}) {
+  function relativeDate(iso: string | null): string {
+    if (!iso) return "never";
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return "unknown";
+    const days = Math.floor((Date.now() - d.getTime()) / (1000 * 60 * 60 * 24));
+    if (days === 0) return "today";
+    if (days === 1) return "yesterday";
+    if (days < 7) return `${days}d ago`;
+    if (days < 30) return `${Math.floor(days / 7)}w ago`;
+    return `${Math.floor(days / 30)}mo ago`;
+  }
+  const setupOk = onboarded && engagement.clubs_with_distance > 0;
+  return (
+    <div className="grid grid-cols-4 gap-2 mt-2 pt-2 border-t border-line/50 text-[10px]">
+      <EngagementCell
+        ok={setupOk}
+        label="Setup"
+        value={setupOk ? `${engagement.clubs_with_distance} clubs` : "incomplete"}
+      />
+      <EngagementCell
+        ok={engagement.trackman_sessions > 0}
+        label="Trackman"
+        value={
+          engagement.trackman_sessions > 0
+            ? `${engagement.trackman_sessions} session${engagement.trackman_sessions > 1 ? "s" : ""}`
+            : "none"
+        }
+      />
+      <EngagementCell
+        ok={engagement.rounds_count > 0}
+        label="Rounds"
+        value={engagement.rounds_count > 0 ? `${engagement.rounds_count}` : "none"}
+      />
+      <EngagementCell
+        ok={!!engagement.last_activity}
+        label="Last active"
+        value={relativeDate(engagement.last_activity)}
+      />
+    </div>
+  );
+}
+
+function EngagementCell({
+  ok,
+  label,
+  value,
+}: {
+  ok: boolean;
+  label: string;
+  value: string;
+}) {
+  return (
+    <div className={`rounded-md px-2 py-1.5 ${ok ? "bg-forest/8" : "bg-cream/60 border border-line border-dashed"}`}>
+      <p className={`eyebrow ${ok ? "text-gold" : "text-muted"}`}>{label}</p>
+      <p className={`text-[11px] ${ok ? "text-forest" : "text-muted"} mt-0.5 truncate`}>
+        {value}
+      </p>
+    </div>
   );
 }
 
@@ -268,6 +339,9 @@ export default function AdminDashboard() {
                         </div>
                         <StatusBadge status={u.status} />
                       </div>
+                      {u.status === "approved" && u.engagement && (
+                        <EngagementSummary onboarded={u.onboarded} engagement={u.engagement} />
+                      )}
                       {u.status === "approved" && !u.is_admin && (
                         <div className="flex items-center gap-3 mt-2 pt-2 border-t border-line/50">
                           <button

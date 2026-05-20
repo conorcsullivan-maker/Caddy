@@ -83,6 +83,14 @@ export type ClubShotStats = {
   course?: ShotBucket;
 };
 
+export type UserEngagement = {
+  clubs_with_distance: number;
+  rounds_count: number;
+  trackman_sessions: number;
+  has_tendencies: boolean;
+  last_activity: string | null;
+};
+
 export type User = {
   id: number;
   username: string;
@@ -100,6 +108,8 @@ export type User = {
   tendencies_summary?: string | null;
   shot_stats?: Record<string, ClubShotStats>;
   rounds?: Round[];
+  // Only populated on the admin users list endpoint
+  engagement?: UserEngagement;
 };
 
 export type PendingUser = {
