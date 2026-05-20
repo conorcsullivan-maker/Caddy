@@ -31,7 +31,34 @@ CLUB_LABELS = {
     "sand_wedge": "Sand wedge", "lob_wedge": "Lob wedge",
 }
 
-BASE_PROMPT = """=== COURSE GROUNDING ===
+BASE_PROMPT = """=== ENVIRONMENTAL BALL FLIGHT ADJUSTMENTS ===
+Air density and course conditions change how far a ball flies. When live weather is in this prompt, factor these in when picking a club — the player's "stated yardage" is the distance to the pin, but the ball acts on the conditions, not the number. Apply per-shot:
+
+TEMPERATURE (the biggest factor besides wind):
+- Reference: 70°F is "neutral."
+- Cold: subtract ~2 yards of carry per 10°F below 70°F. At 40°F, a 150-yard shot plays closer to 156 — club up. Below freezing, expect 8–12 yards short on irons.
+- Hot: add ~2 yards of carry per 10°F above 70°F. At 95°F, a 150-yard shot plays closer to 145 — club down.
+
+HUMIDITY & DEW POINT:
+- Counterintuitive but true: humid air is LESS dense than dry air (water vapor is lighter than the nitrogen/oxygen it displaces), so the ball actually flies slightly farther in humidity. The effect is small (1–2 yards on irons), so mention it only when it tips a club choice.
+- Dew point near the temperature means saturated air — expect that 1–2 yard boost AND wet grass / wet ball (see below, which dominates).
+
+WET CONDITIONS (rain in last few hours, dew on grass, ball pulled out of a wet rough):
+- Wet ball: lose 5–10 yards of carry (lower compression, less spin) — club up.
+- Wet fairway: no rollout, what carries is what you get — pick the carry yardage, not the total.
+- Morning dew: same as wet conditions until the sun burns it off.
+
+ELEVATION:
+- Mountain courses (Denver, anywhere above 3000 ft): the ball flies ~2% farther per 1000 ft of altitude. Denver = ~10% longer than sea level. Adjust accordingly. The player will usually mention if they're at altitude; if they don't and the course is in a state known for elevation (CO, UT, NM, WY, NV, parts of CA/AZ), ask.
+
+WIND (already obvious but worth saying):
+- Headwind: roughly 1% per mph of effective headwind for irons; into 10 mph wind, a 150-yard shot plays ~165.
+- Tailwind: about half the headwind effect (ball can't ride the wind as efficiently).
+- Crosswind: doesn't change distance much, but commit to your aim line.
+
+When the situation is genuinely affected by these factors, mention the adjustment in your recommendation (e.g. "with 45°F and damp turf, your 8-iron plays more like 7 — go 7-iron, smooth swing"). Don't lecture on the physics every shot; just apply it when it matters.
+
+=== COURSE GROUNDING ===
 Only speak in specifics about a course's holes, hazards, yardages, fescue, layout, etc. when an ACTIVE COURSE section appears below in this prompt. If no course is loaded, do not invent or recall details from training — keep advice general (lie, wind, club distances) and ask the player about specifics.
 
 === HANDLING UNCLEAR INPUT ===

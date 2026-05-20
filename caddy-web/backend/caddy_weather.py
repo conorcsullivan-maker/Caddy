@@ -106,6 +106,10 @@ def fetch_weather(lat: float, lng: float) -> Optional[dict]:
 
 
 def _normalize_period(period: dict) -> dict:
+    # Dew point comes from NWS in Celsius — convert to F to match the rest of
+    # the snapshot. Returns None if NWS didn't include it for this period.
+    dew_c = (period.get("dewpoint") or {}).get("value")
+    dew_f = round(dew_c * 9 / 5 + 32) if isinstance(dew_c, (int, float)) else None
     return {
         "name": period.get("name"),                            # "Tuesday Night"
         "time": period.get("startTime"),
@@ -116,6 +120,7 @@ def _normalize_period(period: dict) -> dict:
         "short_forecast": period.get("shortForecast"),         # "Mostly Sunny"
         "precip_chance": (period.get("probabilityOfPrecipitation") or {}).get("value"),
         "humidity": (period.get("relativeHumidity") or {}).get("value"),
+        "dew_point_f": dew_f,
     }
 
 
@@ -135,6 +140,21 @@ def has_critical_alert(weather: dict) -> bool:
     return False
 
 
+def _temperature_play_adjustment(temp_f: Optional[float]) -> Optional[str]:
+    """Convert temperature into a rough yardage-adjustment hint. Rule of thumb:
+    standard ball-flight reference is ~70°F, and each 10°F deviation shifts
+    carry by about 2 yards (more in extremes). Returns a short string or None."""
+    if temp_f is None:
+        return None
+    delta = temp_f - 70
+    yards = round(delta / 5)  # ~2 yards per 10°F
+    if yards == 0:
+        return "Air density ~normal (reference 70°F)"
+    if yards > 0:
+        return f"Warm air → ball flies ~{yards} yds farther than nominal for irons"
+    return f"Cold air → ball carries ~{abs(yards)} yds shorter than nominal for irons"
+
+
 def format_weather_context(weather: dict) -> str:
     """Format weather + alerts as a system prompt section for Claude."""
     if not weather:
@@ -143,14 +163,20 @@ def format_weather_context(weather: dict) -> str:
     cur = weather.get("current")
     if cur:
         lines.append(f"Conditions: {cur.get('short_forecast') or 'unknown'}")
-        if cur.get("temperature") is not None:
-            lines.append(f"Temperature: {cur['temperature']}°{cur.get('temperature_unit','F')}")
+        temp = cur.get("temperature")
+        if temp is not None:
+            lines.append(f"Temperature: {temp}°{cur.get('temperature_unit','F')}")
         if cur.get("wind_speed"):
             lines.append(f"Wind: {cur['wind_speed']} from {cur.get('wind_direction','?')}")
         if cur.get("precip_chance") is not None:
             lines.append(f"Chance of rain: {cur['precip_chance']}%")
         if cur.get("humidity") is not None:
             lines.append(f"Humidity: {cur['humidity']}%")
+        if cur.get("dew_point_f") is not None:
+            lines.append(f"Dew point: {cur['dew_point_f']}°F")
+        adj = _temperature_play_adjustment(temp)
+        if adj:
+            lines.append(f"Ball flight: {adj}")
 
     upcoming = weather.get("upcoming") or []
     if upcoming:
