@@ -6,15 +6,20 @@ import { useEffect, useState } from "react";
 import { api, type User, type Round, type ArchivedConversation, type ClubShotStats } from "@/lib/api";
 
 const CLUB_ORDER = [
-  "driver", "3-wood", "5-wood", "4-iron", "5-iron", "6-iron",
-  "7-iron", "8-iron", "9-iron", "pitching_wedge", "gap_wedge",
-  "sand_wedge", "lob_wedge",
+  "driver", "3-wood", "5-wood", "7-wood",
+  "3-hybrid", "4-hybrid", "5-hybrid",
+  "4-iron", "5-iron", "6-iron", "7-iron", "8-iron", "9-iron",
+  "pitching_wedge", "gap_wedge", "sand_wedge", "lob_wedge",
 ];
 
 const CLUB_LABELS: Record<string, string> = {
   driver: "Driver",
   "3-wood": "3-wood",
   "5-wood": "5-wood",
+  "7-wood": "7-wood",
+  "3-hybrid": "3-hybrid",
+  "4-hybrid": "4-hybrid",
+  "5-hybrid": "5-hybrid",
   "4-iron": "4-iron",
   "5-iron": "5-iron",
   "6-iron": "6-iron",
@@ -26,6 +31,11 @@ const CLUB_LABELS: Record<string, string> = {
   sand_wedge: "Sand wedge",
   lob_wedge: "Lob wedge",
 };
+
+// Format a custom-club key for display ("custom_chipper" → "Chipper").
+function customClubLabel(key: string): string {
+  return key.replace(/^custom_/, "").replace(/-/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
 
 export default function ProfilePage() {
   const router = useRouter();
@@ -74,7 +84,13 @@ export default function ProfilePage() {
     );
   }
 
-  const inBag = CLUB_ORDER.filter((c) => user.bag?.[c]);
+  // Standard clubs from CLUB_ORDER first, then any custom clubs the user
+  // added on setup (keys prefixed with "custom_") appended at the end.
+  const standardInBag = CLUB_ORDER.filter((c) => user.bag?.[c]);
+  const customInBag = Object.keys(user.bag || {})
+    .filter((k) => !CLUB_ORDER.includes(k) && user.bag?.[k])
+    .sort();
+  const inBag = [...standardInBag, ...customInBag];
 
   return (
     <main className="min-h-screen flex flex-col bg-cream">
@@ -182,7 +198,7 @@ export default function ProfilePage() {
             <div className="bg-paper border border-line rounded-2xl divide-y divide-line">
               {inBag.map((club) => (
                 <div key={club} className="px-5 py-3 flex items-center justify-between">
-                  <span className="text-[14px] text-ink">{CLUB_LABELS[club]}</span>
+                  <span className="text-[14px] text-ink">{CLUB_LABELS[club] || customClubLabel(club)}</span>
                   <span className="text-[14px] text-forest font-medium">
                     {user.bag?.[club]} <span className="text-muted text-[12px]">yards</span>
                   </span>

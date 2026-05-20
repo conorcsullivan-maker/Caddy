@@ -24,12 +24,22 @@ anthropic_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
 
 CLUB_LABELS = {
-    "driver": "Driver", "3-wood": "3-wood", "5-wood": "5-wood",
+    "driver": "Driver",
+    "3-wood": "3-wood", "5-wood": "5-wood", "7-wood": "7-wood",
+    "3-hybrid": "3-hybrid", "4-hybrid": "4-hybrid", "5-hybrid": "5-hybrid",
     "4-iron": "4-iron", "5-iron": "5-iron", "6-iron": "6-iron",
     "7-iron": "7-iron", "8-iron": "8-iron", "9-iron": "9-iron",
     "pitching_wedge": "Pitching wedge", "gap_wedge": "Gap wedge",
     "sand_wedge": "Sand wedge", "lob_wedge": "Lob wedge",
 }
+
+
+def _format_custom_club_key(key: str) -> str:
+    """Render a user-added custom club key ('custom_chipper') as a friendly
+    label ('Chipper') for the system prompt bag listing."""
+    cleaned = key[len("custom_"):] if key.startswith("custom_") else key
+    cleaned = cleaned.replace("-", " ").replace("_", " ")
+    return cleaned.strip().capitalize() if cleaned else key
 
 BASE_PROMPT = """=== ENVIRONMENTAL BALL FLIGHT ADJUSTMENTS ===
 Air density and course conditions change how far a ball flies. When live weather is in this prompt, factor these in when picking a club — the player's "stated yardage" is the distance to the pin, but the ball acts on the conditions, not the number. Apply per-shot:
@@ -175,12 +185,17 @@ def build_system_prompt(user: dict) -> str:
     """Compose the system prompt with personalized player profile data."""
     name = user.get("full_name", "Player").split()[0]
 
-    # Bag summary
+    # Bag summary — standard clubs use their canonical label; custom clubs
+    # the player added via the "+ Add another club" form get their key
+    # prettified (e.g. "custom_chipper" → "Chipper").
     bag = user.get("bag") or {}
     bag_lines = []
     for club, yards in bag.items():
         if yards:
-            label = CLUB_LABELS.get(club, club)
+            if club in CLUB_LABELS:
+                label = CLUB_LABELS[club]
+            else:
+                label = _format_custom_club_key(club)
             bag_lines.append(f"{label}: {yards} yards")
     bag_str = "\n".join(bag_lines) if bag_lines else "Not yet entered"
 
