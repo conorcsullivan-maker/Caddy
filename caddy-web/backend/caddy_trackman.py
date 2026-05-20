@@ -114,15 +114,20 @@ def fetch_trackman_report(url_or_id: str) -> Optional[dict]:
 # ────────────────────────────────────────────────────────────
 # Session JSON → per-club summary text for Claude
 # ────────────────────────────────────────────────────────────
-def summarize_trackman_session(session: dict) -> tuple[Optional[str], int]:
+def summarize_trackman_session(session: dict) -> tuple[Optional[str], int, dict]:
     """Build a per-club summary string from a Trackman session payload.
-    Returns (summary_text, total_shot_count). summary_text is None if no shots."""
+    Returns (summary_text, total_shot_count, per_club_stats).
+      - summary_text: prose for Claude (qualitative + observations)
+      - per_club_stats: structured per-club bucket dicts suitable for merging
+        into the user's persistent shot_stats[club].trackman record.
+    summary_text is None if no shots."""
     groups = session.get("StrokeGroups", [])
     if not groups:
-        return None, 0
+        return None, 0, {}
 
     lines = []
     total_shots = 0
+    per_club_stats: dict = {}
     player_name = (groups[0].get("Player") or {}).get("Name", "Player")
     date = groups[0].get("Date", "unknown")
     lines.append(f"Player: {player_name}  |  Session date: {date}")
@@ -157,10 +162,24 @@ def summarize_trackman_session(session: dict) -> tuple[Optional[str], int]:
         club_path    = avg("ClubPath")
         max_height   = avg("MaxHeight", M_TO_YARDS)
 
-        best_carry = max((s["Measurement"].get("Carry", 0) or 0) for s in strokes) * M_TO_YARDS
         carries = [(s["Measurement"].get("Carry", 0) or 0) * M_TO_YARDS for s in strokes]
+        best_carry = max(carries) if carries else 0
+        worst_carry = min(carries) if carries else 0
         mean = sum(carries) / len(carries) if carries else 0
+        sum_sq = sum(c * c for c in carries)
         stddev = (sum((c - mean) ** 2 for c in carries) / len(carries)) ** 0.5 if carries else 0
+        total_carry_int = int(round(sum(carries)))
+
+        # Structured bucket for persistent shot_stats merge (Trackman doesn't
+        # tag direction so left/right/center stay zero on this side).
+        per_club_stats[club_label] = {
+            "count": n,
+            "total_carry": total_carry_int,
+            "sum_sq": int(round(sum_sq)),
+            "best": int(round(best_carry)),
+            "worst": int(round(worst_carry)),
+            "left": 0, "right": 0, "center": 0,
+        }
 
         tier = shot_count_tier(n)
         lines.append(f"{club_label} ({n} shots this session — {tier})")
@@ -178,31 +197,77 @@ def summarize_trackman_session(session: dict) -> tuple[Optional[str], int]:
             lines.append(f"  Face-to-path: {face_to_path:+.1f}°  |  Club path: {club_path:+.1f}°")
         lines.append("")
 
-    return "\n".join(lines), total_shots
+    return "\n".join(lines), total_shots, per_club_stats
 
 
 # ────────────────────────────────────────────────────────────
 # CSV → flat text for Claude
 # ────────────────────────────────────────────────────────────
-def parse_trackman_csv_text(csv_text: str) -> tuple[Optional[str], int]:
-    """Parse pasted/uploaded CSV content into a flat string + row count."""
+def parse_trackman_csv_text(csv_text: str) -> tuple[Optional[str], int, dict]:
+    """Parse pasted/uploaded CSV content into (flat_text, row_count, per_club_stats).
+    The CSV format Trackman exports has shot-per-row data with a Club column; we
+    aggregate Carry per club into the same bucket shape as the JSON parser so
+    both upload paths feed shot_stats consistently. Returns per_club_stats={} if
+    no recognizable Club + Carry columns are present."""
     if not csv_text or not csv_text.strip():
-        return None, 0
+        return None, 0, {}
     try:
-        # utf-8-sig strips BOM if Trackman exported one
         if csv_text.startswith("﻿"):
             csv_text = csv_text[1:]
         reader = csv.DictReader(io.StringIO(csv_text))
         rows = list(reader)
     except Exception:
-        return None, 0
+        return None, 0, {}
     if not rows:
-        return None, 0
+        return None, 0, {}
     headers = list(rows[0].keys())
+
+    # Find the Club and Carry columns (case-insensitive, tolerant of headers
+    # like "Club Type", "Carry Distance", "Carry (yd)" etc.)
+    def find_col(*needles: str) -> Optional[str]:
+        for h in headers:
+            hl = h.lower()
+            if all(n in hl for n in needles):
+                return h
+        return None
+
+    club_col  = find_col("club")
+    carry_col = find_col("carry") or find_col("distance")
+
+    per_club_stats: dict = {}
+    if club_col and carry_col:
+        # Aggregate per-club carries into bucket shape
+        agg: dict = {}
+        for row in rows:
+            club_raw = (row.get(club_col) or "").strip()
+            if not club_raw:
+                continue
+            club_label = CLUB_LABEL_MAP.get(club_raw, club_raw)
+            try:
+                # Carry may already be in yards in the CSV; assume so.
+                carry = float(str(row.get(carry_col, "")).strip() or 0)
+            except ValueError:
+                continue
+            if carry <= 0:
+                continue
+            agg.setdefault(club_label, []).append(carry)
+        for club, carries in agg.items():
+            n = len(carries)
+            if n == 0:
+                continue
+            per_club_stats[club] = {
+                "count": n,
+                "total_carry": int(round(sum(carries))),
+                "sum_sq": int(round(sum(c * c for c in carries))),
+                "best": int(round(max(carries))),
+                "worst": int(round(min(carries))),
+                "left": 0, "right": 0, "center": 0,
+            }
+
     lines = [", ".join(headers)]
     for row in rows:
         lines.append(", ".join(str(row.get(h, "")).strip() for h in headers))
-    return "\n".join(lines), len(rows)
+    return "\n".join(lines), len(rows), per_club_stats
 
 
 # ────────────────────────────────────────────────────────────
@@ -219,46 +284,29 @@ def generate_tendencies_summary(
         return None
 
     existing = existing_summary or "No prior tendencies on file."
-    prompt = f"""You are analyzing a Trackman simulator session for {first_name} to update their AI caddy profile.
+    prompt = f"""You are writing the QUALITATIVE narrative for {first_name}'s AI caddy profile based on a fresh Trackman session.
 
-EXISTING TENDENCIES ON FILE:
+IMPORTANT: Quantitative data (per-club shot counts, average distances, spread, best/worst, confidence tier) is stored elsewhere in a structured database and computed automatically. DO NOT put shot counts or numeric averages in your summary. Focus only on the QUALITATIVE observations the structured data can't capture.
+
+EXISTING NARRATIVE ON FILE:
 {existing}
 
 NEW TRACKMAN SESSION DATA:
 {session_data_str}
 
-TIERED CONFIDENCE RULES (critical — follow exactly):
+WRITE AN UPDATED QUALITATIVE SUMMARY that covers:
+- Miss patterns — direction (left/right) and shape (face-to-path tells you draw/fade tendency)
+- Swing tendencies — smash factor reliability, spin rate concerns, launch angle quirks
+- Which clubs feel strongest and which need work
+- Notable changes from the prior narrative — improvements, regressions, new patterns
+- Any context that affects in-round decisions (fatigue patterns late in sessions, recurring miss shapes, etc.)
 
-Trust in a Trackman-derived club distance is a gradient based on CUMULATIVE shots across ALL sessions (not just this one). When you write the updated summary, track a running shot total per club so future updates can keep accumulating.
+DO NOT include:
+- Specific yardage averages ("Driver averages 245 yards") — those are in the structured store and may differ session-to-session
+- Shot counts ("over 18 shots") — also in the structured store
+- Statements like "high confidence" or "trust this number" — the system handles tier classification separately
 
-Tiers:
-  • Cumulative < {SHOT_TIER_SMALL} shots → TOO FEW. Don't even mention; ignore until more data.
-  • Cumulative {SHOT_TIER_SMALL}–{SHOT_TIER_MEDIUM - 1} shots → LOW CONFIDENCE / small sample.
-    Note the shot count and current average, but TELL THE CADDY to keep using the
-    player's stated bag distance during play. One short session can produce
-    misleading numbers (fatigue, mood, conditions).
-  • Cumulative {SHOT_TIER_MEDIUM}–{SHOT_TIER_HIGH - 1} shots → MEDIUM CONFIDENCE.
-    Trust the Trackman average as the working distance unless it diverges
-    sharply (>20%) from the player's stated value — in that case, flag the
-    discrepancy and let the player decide. Otherwise use the Trackman number.
-  • Cumulative ≥ {SHOT_TIER_HIGH} shots → HIGH CONFIDENCE.
-    The Trackman number IS the player's real distance. Use it as canonical.
-
-Each club line in the NEW SESSION DATA above shows the count for THIS session
-only, plus an in-session tier label. You must combine that with whatever shot
-counts are already in the EXISTING TENDENCIES (look for parenthetical counts
-like "(67 shots, MEDIUM)") to get the cumulative total. If the existing
-summary has no prior count for a club, treat the cumulative as this session's
-count alone.
-
-WRITE THE UPDATED SUMMARY:
-- For each significant club, include the format: "Driver: 245 yd avg over X shots cumulative (TIER). [observations]"
-- Drop clubs that are still TOO FEW unless you want to flag them as "needs more reps."
-- Miss patterns / shape / face-to-path / smash factor: only call out tendencies where the sample supports them (medium+ confidence).
-- Compare against prior — note improvements ("driver consistency is tightening — was ±28 yd over 30 shots, now ±19 yd over 80 shots").
-- Tell the caddy clearly which clubs to trust the Trackman numbers for vs. which to defer to the stated bag.
-
-Write in second person, factual, useful for in-round decision making. Around 220 words. Always include the cumulative shot count in parentheses for every club so future updates can keep counting."""
+Write in second person, factual, useful for in-round decision making. Around 180 words. Think of this as the "scouting report" a Tour caddy would jot in a notebook — patterns and observations, not numbers."""
 
     try:
         response = anthropic_client.messages.create(

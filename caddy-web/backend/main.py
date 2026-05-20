@@ -153,6 +153,7 @@ def init_db():
         "ALTER TABLE users ADD COLUMN conversation_history TEXT",
         "ALTER TABLE users ADD COLUMN active_round_state TEXT",
         "ALTER TABLE users ADD COLUMN on_course_shots TEXT",
+        "ALTER TABLE users ADD COLUMN shot_stats TEXT",
     ):
         try:
             c.execute(col_def)
@@ -202,58 +203,151 @@ def generate_token() -> str:
     return secrets.token_urlsafe(32)
 
 
+# ────────────────────────────────────────────────────────────
+# Unified shot statistics
+#
+# Every shot — whether from a Trackman session upload or inferred during an
+# on-course round — lands in one place: user.shot_stats. Per club, per source.
+# The cumulative count across BOTH sources determines the confidence tier
+# (see caddy_trackman.SHOT_TIER_* and shot_count_tier), and the tier is
+# computed in code, not in Claude's prompt. Claude just reads a pre-computed
+# label like "MEDIUM CONFIDENCE" and uses it.
+#
+# Bucket shape:
+#   {count, total_carry, sum_sq, best, worst, left, right, center}
+# Left/right/center only meaningful for on-course shots. Trackman doesn't tag
+# direction so those stay zero in the trackman bucket.
+# ────────────────────────────────────────────────────────────
+
+EMPTY_BUCKET = {
+    "count": 0, "total_carry": 0, "sum_sq": 0,
+    "best": 0, "worst": 0,
+    "left": 0, "right": 0, "center": 0,
+}
+
+
+def _new_bucket() -> dict:
+    return dict(EMPTY_BUCKET)
+
+
+def _merge_one_shot_into_bucket(bucket: dict, distance: int, direction: Optional[str] = None) -> dict:
+    """Add a single shot's distance into a running bucket. Returns the updated bucket."""
+    n_before = bucket.get("count", 0)
+    bucket["count"] = n_before + 1
+    bucket["total_carry"] = bucket.get("total_carry", 0) + distance
+    bucket["sum_sq"] = bucket.get("sum_sq", 0) + distance * distance
+    bucket["best"] = max(bucket.get("best", 0), distance)
+    if n_before == 0:
+        bucket["worst"] = distance
+    else:
+        bucket["worst"] = min(bucket.get("worst", distance), distance)
+    if direction in ("left", "right", "center"):
+        bucket[direction] = bucket.get(direction, 0) + 1
+    return bucket
+
+
+def _merge_bucket_into_bucket(target: dict, addend: dict) -> dict:
+    """Merge two stat buckets (used when bulk-loading a Trackman session)."""
+    n_target = target.get("count", 0)
+    n_addend = addend.get("count", 0)
+    target["count"] = n_target + n_addend
+    target["total_carry"] = target.get("total_carry", 0) + addend.get("total_carry", 0)
+    target["sum_sq"] = target.get("sum_sq", 0) + addend.get("sum_sq", 0)
+    target["best"] = max(target.get("best", 0), addend.get("best", 0))
+    if n_target == 0:
+        target["worst"] = addend.get("worst", 0)
+    elif n_addend > 0:
+        target["worst"] = min(target.get("worst", 9999), addend.get("worst", 9999))
+    for d in ("left", "right", "center"):
+        target[d] = target.get(d, 0) + addend.get(d, 0)
+    return target
+
+
+def _load_shot_stats(user_id: int) -> dict:
+    """Load the user's shot_stats JSON, performing one-time migration from the
+    older on_course_shots column if shot_stats is empty but legacy data exists."""
+    with db() as conn:
+        row = conn.execute(
+            "SELECT shot_stats, on_course_shots FROM users WHERE id = ?",
+            (user_id,),
+        ).fetchone()
+    if not row:
+        return {}
+    try:
+        stats = json.loads(row["shot_stats"]) if row["shot_stats"] else {}
+    except Exception:
+        stats = {}
+    if not stats and row["on_course_shots"]:
+        # Legacy migration — port the old per-club flat shape into shot_stats
+        # under the "course" sub-bucket.
+        try:
+            legacy = json.loads(row["on_course_shots"])
+            for club, b in (legacy or {}).items():
+                if not isinstance(b, dict):
+                    continue
+                stats[club] = {"trackman": _new_bucket(), "course": {
+                    "count": b.get("count", 0),
+                    "total_carry": b.get("total_carry", 0),
+                    "sum_sq": b.get("sum_sq", 0),
+                    "best": b.get("best", 0),
+                    "worst": b.get("worst", 0),
+                    "left": b.get("left", 0),
+                    "right": b.get("right", 0),
+                    "center": b.get("center", 0),
+                }}
+            _save_shot_stats(user_id, stats)
+        except Exception as e:
+            print(f"[shot_stats] legacy migration failed: {e}")
+    return stats
+
+
+def _save_shot_stats(user_id: int, stats: dict) -> None:
+    with db() as conn:
+        conn.execute(
+            "UPDATE users SET shot_stats = ? WHERE id = ?",
+            (json.dumps(stats), user_id),
+        )
+
+
 def record_on_course_shot(
     user_id: int,
     club: str,
     distance: int,
     direction: Optional[str] = None,
 ) -> None:
-    """Append an on-course shot to the user's cumulative log. Updates running
-    stats per club so the tendencies tier can later be computed from the
-    combined Trackman + on-course pool. `direction` is "left" | "right" |
-    "center" | None when unknown."""
-    with db() as conn:
-        row = conn.execute(
-            "SELECT on_course_shots FROM users WHERE id = ?",
-            (user_id,),
-        ).fetchone()
-        if not row:
-            return
-        try:
-            log = json.loads(row["on_course_shots"]) if row["on_course_shots"] else {}
-        except Exception:
-            log = {}
+    """Log a single on-course shot under shot_stats[club].course."""
+    stats = _load_shot_stats(user_id)
+    club_data = stats.get(club) or {"trackman": _new_bucket(), "course": _new_bucket()}
+    if "course" not in club_data:
+        club_data["course"] = _new_bucket()
+    _merge_one_shot_into_bucket(club_data["course"], distance, direction)
+    stats[club] = club_data
+    _save_shot_stats(user_id, stats)
 
-        bucket = log.get(club) or {
-            "count": 0,
-            "total_carry": 0,
-            "sum_sq": 0,   # for variance
-            "best": 0,
-            "worst": 9999,
-            "left": 0,
-            "right": 0,
-            "center": 0,
-        }
-        bucket["count"] += 1
-        bucket["total_carry"] += distance
-        bucket["sum_sq"] += distance * distance
-        bucket["best"] = max(bucket["best"], distance)
-        bucket["worst"] = min(bucket["worst"], distance)
-        if direction in ("left", "right", "center"):
-            bucket[direction] += 1
-        log[club] = bucket
 
-        conn.execute(
-            "UPDATE users SET on_course_shots = ? WHERE id = ?",
-            (json.dumps(log), user_id),
-        )
+def record_trackman_session_stats(user_id: int, per_club_stats: dict) -> None:
+    """Merge a freshly-parsed Trackman session into shot_stats[club].trackman
+    for each club in the session. per_club_stats keys are club labels matching
+    CLUB_LABELS, values are bucket-shaped dicts from the session parser."""
+    if not per_club_stats:
+        return
+    stats = _load_shot_stats(user_id)
+    for club, session_bucket in per_club_stats.items():
+        if not isinstance(session_bucket, dict) or not session_bucket.get("count"):
+            continue
+        club_data = stats.get(club) or {"trackman": _new_bucket(), "course": _new_bucket()}
+        if "trackman" not in club_data:
+            club_data["trackman"] = _new_bucket()
+        _merge_bucket_into_bucket(club_data["trackman"], session_bucket)
+        stats[club] = club_data
+    _save_shot_stats(user_id, stats)
 
 
 def user_dict(row: sqlite3.Row) -> dict:
     """Convert DB row to safe dict (no pin_hash)."""
     d = dict(row)
     d.pop("pin_hash", None)
-    for json_field in ("bag", "rounds", "on_course_shots"):
+    for json_field in ("bag", "rounds", "on_course_shots", "shot_stats"):
         if d.get(json_field):
             try:
                 d[json_field] = json.loads(d[json_field])
@@ -533,9 +627,11 @@ async def upload_trackman(
     if not url_clean and not csv_file:
         raise HTTPException(400, "Provide either a Trackman report URL or a CSV file.")
 
-    # Parse the input into a flat string we can hand to Claude.
+    # Parse the input into (text, count, per_club_stats). Both the URL and the
+    # CSV path return the same 3-tuple shape so the merge into shot_stats is uniform.
     session_data_str: Optional[str] = None
     shot_count = 0
+    per_club_stats: dict = {}
 
     if url_clean:
         session = fetch_trackman_report(url_clean)
@@ -544,7 +640,7 @@ async def upload_trackman(
                 400,
                 "Couldn't load that Trackman report. Double-check the URL or paste the report ID instead.",
             )
-        session_data_str, shot_count = summarize_trackman_session(session)
+        session_data_str, shot_count, per_club_stats = summarize_trackman_session(session)
         if not session_data_str:
             raise HTTPException(400, "The Trackman report loaded but contained no shot data.")
 
@@ -554,11 +650,17 @@ async def upload_trackman(
             csv_text = raw.decode("utf-8-sig")
         except UnicodeDecodeError:
             csv_text = raw.decode("latin-1", errors="ignore")
-        session_data_str, shot_count = parse_trackman_csv_text(csv_text)
+        session_data_str, shot_count, per_club_stats = parse_trackman_csv_text(csv_text)
         if not session_data_str:
             raise HTTPException(400, "Couldn't parse that CSV — make sure it's a Trackman export.")
 
-    # Ask Claude to merge the new session with existing tendencies.
+    # Merge this session's structured per-club stats into the user's shot_stats
+    # FIRST, so the cumulative count is up-to-date before we ask Claude to write
+    # the qualitative narrative.
+    record_trackman_session_stats(user["id"], per_club_stats)
+
+    # Ask Claude to update the qualitative tendencies narrative (patterns,
+    # miss shapes, swing observations — NOT numeric averages).
     first_name = (user.get("full_name") or "Player").split()[0]
     new_summary = generate_tendencies_summary(
         first_name=first_name,
@@ -566,11 +668,9 @@ async def upload_trackman(
         session_data_str=session_data_str,
     )
     if not new_summary:
-        raise HTTPException(
-            502,
-            "Trackman data parsed, but the tendencies summary couldn't be generated. "
-            "Anthropic API might be unavailable — try again in a moment.",
-        )
+        # Don't fail the request if Claude is unavailable — the structured stats
+        # already saved. The narrative is best-effort and will update next time.
+        new_summary = user.get("tendencies_summary") or "(Tendencies narrative will populate after the next Trackman upload when Anthropic is available.)"
 
     with db() as conn:
         conn.execute(
@@ -742,7 +842,9 @@ def process_user_message(user: dict, message: str,
         try:
             inferred = drive_result.get("inferred_drive")
             if isinstance(inferred, (int, float)) and 50 <= inferred <= 400:
-                record_on_course_shot(user["id"], "driver", int(inferred))
+                # "Driver" (capitalized) matches the label Trackman uses in
+                # shot_stats so on-course and Trackman buckets merge cleanly.
+                record_on_course_shot(user["id"], "Driver", int(inferred))
         except Exception as e:
             print(f"[on-course] driver log failed: {e}")
 

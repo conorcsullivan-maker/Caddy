@@ -85,18 +85,18 @@ CRITICAL: ONLY recommend clubs that appear in the PLAYER CLUB DISTANCES section 
 
 DATA SOURCE PRIORITY for club distances — tiered confidence:
 
-Real data accumulates from TWO sources and they're POOLED together for confidence:
-  (a) Trackman sessions (uploaded — typically more precise, but conditions vary)
-  (b) The PLAYER ON-COURSE LOG section above (every drive inferred from "hole yardage minus remaining yardage", logged automatically as you play)
+There are two sources of real club data, and both are POOLED into the PLAYER SHOT STATS section above:
+  (a) Trackman sessions (uploaded — typically more precise, controlled conditions)
+  (b) On-course drives (inferred automatically from "hole yardage minus remaining yardage")
 
-For confidence, add the cumulative shot count from BOTH sources for a given club. Apply this hierarchy on every club pick:
+The PLAYER SHOT STATS section already shows you the COMBINED count per club AND a pre-computed confidence tier label. You do not need to do arithmetic — just read the tier label and apply this hierarchy:
 
-- HIGH CONFIDENCE (≥250 combined shots): The pooled Trackman + on-course average IS the player's real distance. Canonical. Override any conflicting bag number.
-- MEDIUM CONFIDENCE (50–249 combined shots): Trust the pooled average as the working distance. If it diverges sharply (more than ~20%) from the player's stated bag value, mention the gap and let the player decide which to plan around for this shot.
-- LOW CONFIDENCE / small sample (10–49 combined shots): The data is directional only. Use the player's STATED bag distance for club picks. You can mention what the limited data suggests ("23 drives logged on course averaging 245 — small sample, treating your stated 285 as the real number until more reps").
-- NO REAL DATA: The PLAYER CLUB DISTANCES section is canonical.
+- HIGH CONFIDENCE: The pooled average IS the player's real distance. Canonical. Override any conflicting bag number.
+- MEDIUM CONFIDENCE: Trust the pooled average as the working distance. If it diverges sharply (more than ~20%) from the player's stated bag value, mention the gap and let the player decide.
+- LOW CONFIDENCE: Small sample, directional only. Use the player's STATED bag distance from PLAYER CLUB DISTANCES for club picks. You can mention what the limited data suggests, but don't plan around it.
+- TOO FEW SHOTS (or no entry in PLAYER SHOT STATS): the stated bag is canonical.
 
-Trackman data tends to be more precise (controlled conditions), but the on-course log is also real data — it reflects how the player actually plays under real conditions and pressure. Pool them. Never let one bad session overwrite a player's reality — a player who's hit their driver 340 yards has done that; a 4-shot tired-arm session at 175 doesn't undo it. Confidence comes from volume across both sources.
+Trackman data tends to be more precise, but on-course data reflects how the player actually plays under real conditions and pressure — they're complementary. Both count equally toward the tier. Never let one bad session overwrite a player's reality.
 
 === BETWEEN CLUBS ===
 When the distance falls between two clubs, always specify:
@@ -194,7 +194,7 @@ def build_system_prompt(user: dict) -> str:
     else:
         rounds_str = "No rounds logged."
 
-    on_course_str = _format_on_course_log(user.get("on_course_shots") or {})
+    shot_stats_str = _format_shot_stats(user.get("shot_stats") or {})
 
     profile_section = f"""
 
@@ -205,13 +205,13 @@ Home course: {home_course}
 Driver miss: {driver_miss}
 Iron miss: {iron_miss}
 
-=== PLAYER CLUB DISTANCES ===
+=== PLAYER CLUB DISTANCES (stated bag) ===
 {bag_str}
 
-=== PLAYER ON-COURSE LOG ===
-{on_course_str}
+=== PLAYER SHOT STATS (pooled Trackman + on-course, computed) ===
+{shot_stats_str}
 
-=== PLAYER HISTORY & TENDENCIES ===
+=== PLAYER HISTORY & TENDENCIES (qualitative narrative) ===
 {tendencies}
 
 === RECENT ROUNDS ===
@@ -220,35 +220,53 @@ Iron miss: {iron_miss}
     return BASE_PROMPT + profile_section
 
 
-def _format_on_course_log(log: dict) -> str:
-    """Render the cumulative on-course shot log as a per-club summary.
-    These counts FEED THE SAME TIER SYSTEM as Trackman — combine them when
-    judging confidence. A player with 30 driver shots from Trackman + 25
-    drives logged on course is 55 shots total = MEDIUM CONFIDENCE."""
-    if not log:
-        return "No on-course shots logged yet. Once the player tells Caddy their remaining yardage on a known hole, every drive will accumulate here."
+def _format_shot_stats(stats: dict) -> str:
+    """Render the unified shot_stats dict as a per-club summary with a
+    pre-computed confidence tier. This is the SINGLE source of truth for
+    quantitative club data — pooled across Trackman and on-course sources,
+    computed in code, not in Claude's head."""
+    # Import inside the function to avoid a circular import at module load.
+    from caddy_trackman import shot_count_tier  # noqa: WPS433
+
+    if not stats:
+        return ("No shot data collected yet. As the player uploads Trackman sessions and "
+                "tells Caddy yardages on the course, this section will fill in.")
+
     lines = []
-    for club, b in log.items():
-        n = b.get("count") or 0
-        if n < 1:
+    for club, club_data in stats.items():
+        if not isinstance(club_data, dict):
             continue
-        total = b.get("total_carry") or 0
-        avg = round(total / n) if n else 0
-        # Variance from running sum-of-squares
-        sum_sq = b.get("sum_sq") or 0
-        var = max((sum_sq / n) - (avg * avg), 0)
+        tm = club_data.get("trackman") or {}
+        co = club_data.get("course") or {}
+        n_tm = tm.get("count") or 0
+        n_co = co.get("count") or 0
+        n_total = n_tm + n_co
+        if n_total < 1:
+            continue
+        total = (tm.get("total_carry") or 0) + (co.get("total_carry") or 0)
+        sum_sq = (tm.get("sum_sq") or 0) + (co.get("sum_sq") or 0)
+        avg = round(total / n_total) if n_total else 0
+        var = max((sum_sq / n_total) - (avg * avg), 0) if n_total else 0
         sd = round(var ** 0.5)
-        left = b.get("left") or 0
-        right = b.get("right") or 0
-        center = b.get("center") or 0
+        best_vals = [v for v in (tm.get("best"), co.get("best")) if v]
+        worst_vals = [v for v in (tm.get("worst"), co.get("worst")) if v]
+        best = max(best_vals) if best_vals else avg
+        worst = min(worst_vals) if worst_vals else avg
+        tier = shot_count_tier(n_total)
+
+        # On-course direction is the only direction data we have.
+        left = co.get("left") or 0
+        right = co.get("right") or 0
+        center = co.get("center") or 0
         miss_str = ""
-        directional = left + right + center
-        if directional > 0:
-            miss_str = f", direction: {center}C/{left}L/{right}R"
+        if (left + right + center) > 0:
+            miss_str = f"  ·  on-course direction: {center}C/{left}L/{right}R"
+
         lines.append(
-            f"- {club}: {n} shots, avg {avg} yd, ±{sd} yd spread, best {b.get('best')} / worst {b.get('worst')}{miss_str}"
+            f"- {club}: {n_total} combined shots ({n_tm} Trackman + {n_co} on-course) "
+            f"·  avg {avg} yd ±{sd} ·  best {best} / worst {worst}  ·  {tier}{miss_str}"
         )
-    return "\n".join(lines) if lines else "No on-course shots logged yet."
+    return "\n".join(lines) if lines else "No shot data collected yet."
 
 
 def _extract_json(text: str):
