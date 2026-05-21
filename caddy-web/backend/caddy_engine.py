@@ -23,6 +23,12 @@ if not OPENAI_API_KEY:
 anthropic_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
 
+# Per-reply context window sent to Claude. The DB retains the full
+# conversation forever — this constant only limits what each individual
+# caddy_reply call ships to the API so cost/latency stay bounded over a
+# long round. Increase only after measuring the cost impact.
+CLAUDE_CONTEXT_MESSAGES = 60
+
 CLUB_LABELS = {
     "driver": "Driver",
     "3-wood": "3-wood", "5-wood": "5-wood", "7-wood": "7-wood",
@@ -381,7 +387,11 @@ def caddy_reply(user: dict, conversation_history: list[dict], new_message: str,
     Anthropic API itself fails (out of credits, rate limit, outage) so the
     frontend gets a usable reply instead of a generic 500."""
     system = build_system_prompt(user) + (round_context or "")
-    messages = conversation_history + [{"role": "user", "content": new_message}]
+    # Only the last N messages get re-sent to Claude per turn — the full
+    # history is still in the DB. This stops cost from ballooning quadratically
+    # over a long round (otherwise message #150 re-pays for messages #1–149).
+    recent = (conversation_history or [])[-CLAUDE_CONTEXT_MESSAGES:]
+    messages = recent + [{"role": "user", "content": new_message}]
     try:
         response = anthropic_client.messages.create(
             model="claude-opus-4-7",

@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { api, type ArchivedConversationDetail } from "@/lib/api";
+import { api, type ArchivedConversationDetail, type User } from "@/lib/api";
 
 export default function ConversationDetailPage() {
   const params = useParams<{ id: string }>();
@@ -11,6 +11,7 @@ export default function ConversationDetailPage() {
   const id = parseInt(String(params?.id || ""), 10);
 
   const [conv, setConv] = useState<ArchivedConversationDetail | null>(null);
+  const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -20,8 +21,14 @@ export default function ConversationDetailPage() {
       setLoading(false);
       return;
     }
-    api.caddy.conversation(id)
-      .then(setConv)
+    Promise.all([
+      api.caddy.conversation(id),
+      api.me().then((r) => r.user).catch(() => null),
+    ])
+      .then(([c, u]) => {
+        setConv(c);
+        setUser(u);
+      })
       .catch((e: Error) => {
         setError(e.message);
       })
@@ -66,7 +73,17 @@ export default function ConversationDetailPage() {
             ← Profile
           </Link>
           <span className="wordmark text-xl text-forest">Caddy</span>
-          <span className="text-[12px] eyebrow text-muted/0">_</span>
+          {user?.can_export_conversations ? (
+            <a
+              href={api.caddy.downloadConversationUrl(id)}
+              className="text-[12px] eyebrow text-muted hover:text-forest transition"
+              title="Download this conversation as a Word document"
+            >
+              ↓ Word
+            </a>
+          ) : (
+            <span className="text-[12px] eyebrow text-muted/0">_</span>
+          )}
         </div>
       </header>
 

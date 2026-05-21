@@ -105,6 +105,7 @@ export type User = {
   status: "pending" | "approved" | "rejected";
   is_admin: boolean;
   onboarded: boolean;
+  can_export_conversations: boolean;
   bag?: Record<string, number | null>;
   driver_miss?: string | null;
   iron_miss?: string | null;
@@ -310,6 +311,13 @@ export const api = {
       request<{ conversations: ArchivedConversation[] }>("/api/caddy/conversations"),
     conversation: (id: number) =>
       request<ArchivedConversationDetail>(`/api/caddy/conversations/${id}`),
+    // URLs for the .docx download endpoints. Cookies travel with the request
+    // because /api/* is proxied through the frontend origin, so a plain
+    // <a href={url} download> tag is enough — no fetch/blob plumbing needed.
+    downloadConversationUrl: (id: number) =>
+      `${API_BASE}/api/caddy/conversations/${id}/download`,
+    downloadActiveConversationUrl: () =>
+      `${API_BASE}/api/caddy/conversations/active/download`,
     speakUrl: (text: string) => {
       // Returns a URL that will produce TTS audio when fetched (with auth cookie)
       const params = new URLSearchParams({ message: text });

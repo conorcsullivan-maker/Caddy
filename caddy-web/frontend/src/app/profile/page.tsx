@@ -232,7 +232,7 @@ export default function ProfilePage() {
 
         {/* Past conversations — every chat archived, never lost */}
         <Section title="Past conversations">
-          <PastConversations conversations={conversations} />
+          <PastConversations conversations={conversations} canExport={!!user.can_export_conversations} />
         </Section>
 
         {/* Caddy's read on your game — tabular stats + qualitative narrative.
@@ -718,7 +718,7 @@ function RecentRounds({
   );
 }
 
-function PastConversations({ conversations }: { conversations: ArchivedConversation[] }) {
+function PastConversations({ conversations, canExport }: { conversations: ArchivedConversation[]; canExport: boolean }) {
   const [showAll, setShowAll] = useState(false);
   const INITIAL_COUNT = 5;
 
@@ -739,36 +739,47 @@ function PastConversations({ conversations }: { conversations: ArchivedConversat
     <div>
       <div className="bg-paper border border-line rounded-2xl divide-y divide-line">
         {visible.map((c) => (
-          <Link
-            key={c.id}
-            href={`/conversations/${c.id}`}
-            className="block px-5 py-3 hover:bg-cream/40 transition"
-          >
-            <div className="flex items-center justify-between gap-3">
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2 mb-0.5">
-                  <span className={`text-[10px] eyebrow px-2 py-0.5 rounded-full ${
-                    c.kind === "round" ? "bg-forest/10 text-forest" : "bg-gold/10 text-gold"
-                  }`}>
-                    {c.kind === "round" ? "Round" : "Chat"}
-                  </span>
-                  {c.course_name && (
-                    <span className="text-[13px] text-forest truncate">{c.course_name}</span>
-                  )}
+          <div key={c.id} className="flex items-stretch hover:bg-cream/40 transition">
+            <Link
+              href={`/conversations/${c.id}`}
+              className="flex-1 min-w-0 block px-5 py-3"
+            >
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2 mb-0.5">
+                    <span className={`text-[10px] eyebrow px-2 py-0.5 rounded-full ${
+                      c.kind === "round" ? "bg-forest/10 text-forest" : "bg-gold/10 text-gold"
+                    }`}>
+                      {c.kind === "round" ? "Round" : "Chat"}
+                    </span>
+                    {c.course_name && (
+                      <span className="text-[13px] text-forest truncate">{c.course_name}</span>
+                    )}
+                  </div>
+                  <p className="text-[11px] text-muted">{fmt(c.ended_at)}</p>
                 </div>
-                <p className="text-[11px] text-muted">{fmt(c.ended_at)}</p>
+                {c.total_score != null && (
+                  <div className="text-right flex-shrink-0">
+                    <p className="text-[16px] font-semibold text-forest leading-none">{c.total_score}</p>
+                    {c.round_metadata?.differential != null && (
+                      <p className="text-[10px] text-muted mt-0.5">diff {c.round_metadata.differential.toFixed(1)}</p>
+                    )}
+                  </div>
+                )}
+                <span className="text-muted/50 text-sm">→</span>
               </div>
-              {c.total_score != null && (
-                <div className="text-right flex-shrink-0">
-                  <p className="text-[16px] font-semibold text-forest leading-none">{c.total_score}</p>
-                  {c.round_metadata?.differential != null && (
-                    <p className="text-[10px] text-muted mt-0.5">diff {c.round_metadata.differential.toFixed(1)}</p>
-                  )}
-                </div>
-              )}
-              <span className="text-muted/50 text-sm">→</span>
-            </div>
-          </Link>
+            </Link>
+            {canExport && (
+              <a
+                href={api.caddy.downloadConversationUrl(c.id)}
+                className="flex items-center px-4 border-l border-line text-[12px] eyebrow text-muted hover:text-forest hover:bg-cream/60 transition"
+                title="Download as Word document"
+                onClick={(e) => e.stopPropagation()}
+              >
+                ↓
+              </a>
+            )}
+          </div>
         ))}
       </div>
       {hidden > 0 && (

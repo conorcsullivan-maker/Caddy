@@ -64,6 +64,11 @@ app.add_middleware(
 COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "false").lower() == "true"
 COOKIE_SAMESITE = "lax"
 
+# Conversation export allowlist. Only these usernames can download their own
+# chats as .docx during beta. Keep this hardcoded (not gated on is_admin) so
+# future admins don't silently inherit export rights — every grant is explicit.
+EXPORT_ALLOWED_USERNAMES = {"sullydakid", "smiley"}
+
 
 # ────────────────────────────────────────────────────────────
 # Database
@@ -356,6 +361,7 @@ def user_dict(row: sqlite3.Row) -> dict:
                 pass
     d["is_admin"] = bool(d.get("is_admin"))
     d["onboarded"] = bool(d.get("onboarded"))
+    d["can_export_conversations"] = (d.get("username") or "") in EXPORT_ALLOWED_USERNAMES
     return d
 
 
@@ -417,10 +423,6 @@ class CaddyMessageRequest(BaseModel):
     lng: Optional[float] = None
 
 
-# Limit conversation history to last N messages to keep Claude context manageable.
-MAX_HISTORY = 60
-
-
 def load_conversation(user_id: int) -> list[dict]:
     with db() as conn:
         row = conn.execute(
@@ -435,11 +437,14 @@ def load_conversation(user_id: int) -> list[dict]:
 
 
 def save_conversation(user_id: int, history: list[dict]):
-    trimmed = history[-MAX_HISTORY:]
+    # Persist the full conversation — never truncate on save. The per-turn
+    # Claude context window is limited separately inside caddy_reply
+    # (CLAUDE_CONTEXT_MESSAGES). Keeping the full record on disk is what
+    # makes round-end tendencies summaries, archives, and downloads complete.
     with db() as conn:
         conn.execute(
             "UPDATE users SET conversation_history = ? WHERE id = ?",
-            (json.dumps(trimmed), user_id),
+            (json.dumps(history), user_id),
         )
 
 
@@ -1300,6 +1305,100 @@ def get_conversation(conv_id: int, user: dict = Depends(get_current_user)):
         except Exception:
             d["round_metadata"] = None
     return d
+
+
+def _require_export_access(user: dict) -> None:
+    """Gate for the conversation-download endpoints. 403s any user not on
+    the EXPORT_ALLOWED_USERNAMES allowlist."""
+    if (user.get("username") or "") not in EXPORT_ALLOWED_USERNAMES:
+        raise HTTPException(403, "Conversation export is not enabled for this account.")
+
+
+@app.get("/api/caddy/conversations/{conv_id}/download")
+def download_conversation(conv_id: int, user: dict = Depends(get_current_user)):
+    """Stream an archived conversation as a .docx file. Allowlist-gated;
+    scoped strictly to the requesting user — a player can only download
+    conversations they own, never anyone else's."""
+    _require_export_access(user)
+    with db() as conn:
+        row = conn.execute(
+            "SELECT * FROM conversations WHERE id = ? AND user_id = ?",
+            (conv_id, user["id"]),
+        ).fetchone()
+    if not row:
+        raise HTTPException(404, "Conversation not found")
+    d = dict(row)
+    try:
+        messages = json.loads(d["messages"]) if d.get("messages") else []
+    except Exception:
+        messages = []
+    round_metadata = None
+    if d.get("round_metadata"):
+        try:
+            round_metadata = json.loads(d["round_metadata"])
+        except Exception:
+            round_metadata = None
+
+    from caddy_export import conversation_to_docx_bytes, safe_filename
+    blob = conversation_to_docx_bytes(
+        full_name=user.get("full_name") or user.get("username") or "Player",
+        username=user.get("username") or "",
+        kind=d.get("kind") or "casual",
+        course_name=d.get("course_name"),
+        total_score=d.get("total_score"),
+        started_at=d.get("started_at"),
+        ended_at=d.get("ended_at"),
+        round_metadata=round_metadata,
+        messages=messages,
+        is_active=False,
+    )
+    prefix = "Caddy_Round" if (d.get("kind") == "round") else "Caddy_Chat"
+    filename = safe_filename(prefix, d.get("course_name"), d.get("ended_at"))
+    return FastAPIResponse(
+        content=blob,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.get("/api/caddy/conversations/active/download")
+def download_active_conversation(user: dict = Depends(get_current_user)):
+    """Stream the user's in-progress chat (the one still living in
+    users.conversation_history, not yet archived) as a .docx."""
+    _require_export_access(user)
+    history = load_conversation(user["id"])
+    if not history:
+        raise HTTPException(404, "No active conversation to download.")
+    round_state = load_round_state(user["id"])
+    course = round_state.get("course") or {}
+    course_name = course.get("club_name")
+    hole_scores = round_state.get("hole_scores") or []
+    total_score = sum(s for s in hole_scores if isinstance(s, int)) if any(hole_scores) else None
+    round_metadata = {
+        "hole_scores": hole_scores,
+        "course_rating": (round_state.get("tee") or {}).get("course_rating"),
+        "slope_rating": (round_state.get("tee") or {}).get("slope_rating"),
+    } if hole_scores else None
+
+    from caddy_export import conversation_to_docx_bytes, safe_filename
+    blob = conversation_to_docx_bytes(
+        full_name=user.get("full_name") or user.get("username") or "Player",
+        username=user.get("username") or "",
+        kind="active",
+        course_name=course_name,
+        total_score=total_score,
+        started_at=round_state.get("started_at"),
+        ended_at=None,
+        round_metadata=round_metadata,
+        messages=history,
+        is_active=True,
+    )
+    filename = safe_filename("Caddy_Active", course_name, now_iso())
+    return FastAPIResponse(
+        content=blob,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @app.post("/api/caddy/speak")

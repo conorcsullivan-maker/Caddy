@@ -358,6 +358,15 @@ export default function CaddyPage() {
             >
               Reset
             </button>
+            {user.can_export_conversations && messages.length > 0 && (
+              <a
+                href={api.caddy.downloadActiveConversationUrl()}
+                className="text-[12px] eyebrow text-muted hover:text-forest transition"
+                title="Download this in-progress chat as a Word document"
+              >
+                ↓ Word
+              </a>
+            )}
             <Link
               href="/profile"
               className="text-[12px] eyebrow text-muted hover:text-forest transition"
