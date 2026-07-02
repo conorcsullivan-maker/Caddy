@@ -26,15 +26,22 @@ Caddy/
 │   │       └── lib/api.ts              typed API client (single source of truth for backend contract)
 │   │
 │   └── backend/                        FastAPI + SQLite → deployed to Render Starter with /data persistent disk
-│       ├── main.py                     ★ FastAPI routes, DB schema, auth, admin, chat pipeline (process_user_message)
+│       ├── main.py                     app wiring only (~70 lines): CORS, routers, startup
+│       ├── db.py                       schema/migrations, db() connection ctx (immediate=True for RMW), bootstrap admin
+│       ├── security.py                 PIN hashing (PBKDF2 + legacy sha256 upgrade), tokens, cookie/session policy
+│       ├── store.py                    SQLite state: users, conversations, round state, shot stats, geometry cache
+│       ├── deps.py                     get_current_user (with session expiry) / require_admin
+│       ├── pipeline.py                 ★ per-message chat pipeline (process_user_message, handle_round_complete)
+│       ├── routers/                    auth.py, profile.py, chat.py, admin.py
+│       ├── tests/                      94 pytest cases — run before touching detection/wind/prompt helpers
 │       ├── caddy_engine.py             Claude prompts (BASE_PROMPT), Whisper STT, TTS, caddy_reply
 │       ├── caddy_round.py              course/tee/score detection, handicap, course overrides
-│       ├── caddy_weather.py            NWS API integration + format_weather_context
+│       ├── caddy_weather.py            NWS API integration + format_weather_context (10-min TTL cache)
 │       ├── caddy_trackman.py           Trackman URL/CSV ingestion, SHOT_TIER_* constants, tendencies summary
 │       ├── caddy_export.py             .docx conversation export (owner-only)
-│       ├── caddy_geo.py                OSM Overpass geometry + relative-wind math (auto-wind feature)
+│       ├── caddy_geo.py                OSM Overpass geometry, relative-wind math, GPS yardage
 │       ├── course_overrides/*.json     per-course nicknames, yardage fixes, hazard notes
-│       ├── requirements.txt
+│       ├── requirements.txt            (+ requirements-dev.txt for pytest)
 │       ├── venv/                       local Python venv (Python 3.9)
 │       └── caddy.db                    local SQLite (prod DB lives on Render's /data)
 │
@@ -158,13 +165,12 @@ Events (`round_state`, `weather`, `events: ChatEvent[]`) are returned to the fro
 
 ---
 
-## Current priorities (as of 2026-07-02)
+## Current priorities (as of 2026-07-02, post-refactor)
 
-1. **⚠️ RENDER SERVICE SUSPENDED** — as of 2026-07-02 the backend at caddy-api.onrender.com returns 503 with `x-render-routing: suspend` (likely a billing lapse during Conor's June vacation). Only Conor can resume it in the Render dashboard. Until then the live beta is fully down (frontend loads, all API calls fail). On resume, Render should deploy the latest main.
-2. **Validate auto-wind + auto-yardage on a live round** (Drew's next round).
+1. **Validate auto-wind + auto-yardage on a live round** (Drew's next round). Render was suspended (billing, June lapse) — Conor resumed it 2026-07-02; backend is live again.
+2. **Phone-camera lie-reading prototype** — extend the existing Claude vision path ("photo of your lie" → lie/trouble assessment folded into club advice). Groundwork for the wearable vision; no hardware needed.
 3. **Approach-shot logging beyond driver** — parse "hit 7-iron from 145" out of player messages and log to `shot_stats[club].course`.
-4. **Main.py refactor** — split into routers (auth/admin/chat/stats), fix JSON-column read-modify-write races, session expiry, unsalted PIN hashes. Tests exist now; safe to do.
-5. **Trackman session deletion UI** (dedup column exists, no DELETE endpoint).
-6. **Phone-camera lie-reading prototype** — extend the existing Claude vision path ("photo of your lie" → lie/trouble assessment folded into club advice). Groundwork for the wearable vision; no hardware needed.
+4. **Trackman session deletion UI** (dedup column exists, no DELETE endpoint).
+5. **React Native (Expo) iPhone app** — the API contract is now stable post-refactor; consider generating a typed client from FastAPI's OpenAPI schema first.
 
-Decided: iPhone app will be **React Native (Expo)**, built after the refactor stabilizes the API contract. Wearable (glasses) integration deliberately deferred until the RN app exists and lie-reading proves out. Long-term: terrain via USGS 3DEP, paired-play mode, Postgres at ~50 concurrent users.
+Decided: iPhone app will be **React Native (Expo)**. Wearable (glasses) integration deliberately deferred until the RN app exists and lie-reading proves out. Long-term: terrain via USGS 3DEP, paired-play mode, Postgres at ~50 concurrent users.
