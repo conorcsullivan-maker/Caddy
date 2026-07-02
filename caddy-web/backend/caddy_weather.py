@@ -11,6 +11,7 @@ Weather is cached per (rounded) lat/lng for 10 minutes to keep the system
 responsive and avoid hammering the NWS API.
 """
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
 import requests
@@ -68,8 +69,17 @@ def fetch_weather(lat: float, lng: float) -> Optional[dict]:
     if not hourly_url:
         return None
 
-    # Step 2: pull the hourly forecast — first period is "right now"
-    forecast = _http_get(hourly_url)
+    # Steps 2+3 in parallel: the hourly forecast and the alerts feed are
+    # independent — no reason to pay two sequential round-trips on a cache
+    # miss (the first message of a round).
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        forecast_f = pool.submit(_http_get, hourly_url)
+        alerts_f = pool.submit(
+            _http_get, f"https://api.weather.gov/alerts/active?point={lat},{lng}"
+        )
+        forecast = forecast_f.result()
+        alerts_data = alerts_f.result()
+
     current_period = None
     upcoming_periods = []
     if forecast:
@@ -78,8 +88,6 @@ def fetch_weather(lat: float, lng: float) -> Optional[dict]:
             current_period = periods[0]
             upcoming_periods = periods[1:6]  # next 5 hours
 
-    # Step 3: pull active severe-weather alerts for this point
-    alerts_data = _http_get(f"https://api.weather.gov/alerts/active?point={lat},{lng}")
     alert_list = []
     if alerts_data:
         for feat in alerts_data.get("features", []):

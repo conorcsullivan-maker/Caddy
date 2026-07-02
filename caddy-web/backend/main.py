@@ -33,6 +33,7 @@ from caddy_round import (
 from caddy_weather import fetch_weather, format_weather_context, has_critical_alert
 from caddy_geo import (
     fetch_course_geometry, compute_relative_wind, format_relative_wind_context,
+    gps_yards_to_green, format_gps_yardage_context,
 )
 
 # ────────────────────────────────────────────────────────────
@@ -505,6 +506,31 @@ def _relative_wind_for_current_hole(round_state: dict, weather: Optional[dict]) 
         cur.get("wind_direction"),
         cur.get("wind_speed"),
     )
+
+
+def _gps_yardage_for_current_hole(
+    round_state: dict,
+    lat: Optional[float],
+    lng: Optional[float],
+) -> Optional[dict]:
+    """Auto-rangefinder: distance from the player's GPS fix to the current
+    hole's green center, using the same cached OSM geometry as auto-wind.
+    Returns {hole, yards_to_green} or None (no fix, no geometry, or the
+    player isn't plausibly on the hole we think they're on)."""
+    if lat is None or lng is None:
+        return None
+    course = round_state.get("course") or {}
+    geo = _load_course_geometry(course)
+    if not geo or not geo.get("_has_data"):
+        return None
+    current_hole = round_state.get("current_hole") or 1
+    hole_data = (geo.get("holes") or {}).get(str(current_hole))
+    if not hole_data:
+        return None
+    yards = gps_yards_to_green(lat, lng, hole_data.get("green"))
+    if yards is None:
+        return None
+    return {"hole": current_hole, "yards_to_green": yards}
 
 
 def user_dict(row: sqlite3.Row) -> dict:
@@ -1048,13 +1074,28 @@ def process_user_message(user: dict, message: str,
         except Exception as e:
             print(f"[on-course] driver log failed: {e}")
 
-    # 4b. Passive course note extraction (silent — player never sees this)
-    note_result = detect_course_note(message, round_state)
-    if note_result:
-        try:
-            save_hole_note(round_state["course"], note_result["hole"], note_result["note"])
-        except Exception as e:
-            print(f"[notes] save failed: {e}")
+    # 4b. Passive course note extraction (silent — player never sees this).
+    # Runs in a background thread: the note only benefits FUTURE course loads,
+    # so there's no reason to hold this reply hostage to a Haiku call. Snapshot
+    # the state it needs — the request thread keeps mutating round_state.
+    if round_state.get("course"):
+        _note_state = {
+            "course": round_state["course"],
+            "current_hole": round_state.get("current_hole", 1),
+        }
+
+        def _detect_and_save_note(msg: str, state: dict) -> None:
+            try:
+                note_result = detect_course_note(msg, state)
+                if note_result:
+                    save_hole_note(state["course"], note_result["hole"], note_result["note"])
+            except Exception as e:
+                print(f"[notes] background save failed: {e}")
+
+        import threading
+        threading.Thread(
+            target=_detect_and_save_note, args=(message, _note_state), daemon=True
+        ).start()
 
     # 5. Build dynamic context for Claude
     course_ctx = format_course_context(round_state)
@@ -1065,9 +1106,15 @@ def process_user_message(user: dict, message: str,
     # ("ask once per hole, then reuse the player's answer").
     relative_wind = _relative_wind_for_current_hole(round_state, weather)
     wind_ctx = format_relative_wind_context(relative_wind, round_state.get("current_hole"))
-    round_context = course_ctx + score_ctx + weather_ctx + wind_ctx
+    # Auto-rangefinder: GPS distance to the current hole's green center,
+    # from the same cached geometry auto-wind uses.
+    gps_yardage = _gps_yardage_for_current_hole(round_state, lat, lng)
+    yardage_ctx = format_gps_yardage_context(gps_yardage)
+    round_context = course_ctx + score_ctx + weather_ctx + wind_ctx + yardage_ctx
     if relative_wind:
         events.append({"type": "relative_wind", **relative_wind})
+    if gps_yardage:
+        events.append({"type": "gps_yardage", **gps_yardage})
 
     # Course context handling — never block on confirmation. Three cases:
     if course_loaded_now:

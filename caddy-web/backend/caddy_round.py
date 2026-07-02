@@ -387,6 +387,35 @@ SCORE_TRIGGER_KEYWORDS = [
 
 COURSE_MENTION_KEYWORDS = ["at ", "playing", "arrived", "tee off", "course", "club", "we're at", "im at", "i'm at"]
 
+# Stronger course-mention signals used when a course is ALREADY loaded —
+# mid-round chatter is full of incidental "at " ("150 to the pin, wind at
+# my back"), so switching detection demands a more explicit cue before we
+# spend a Haiku call on it.
+_COURSE_HINT_STRONG = [
+    "playing", "we're at", "we are at", "im at", "i'm at", "arrived",
+    "tee off", "teeing off", "course", "club", "links", "golf", "country",
+]
+# Two consecutive Capitalized words ("Butter Brook", "Worcester Country") —
+# Whisper capitalizes proper nouns reliably, and course names are almost
+# always multi-word.
+_PROPER_NOUN_PAIR_RE = re.compile(r"\b[A-Z][a-z]+\s+[A-Z][a-z]+")
+
+
+def might_mention_course(text: str, course_loaded: bool) -> bool:
+    """Cheap pre-filter that decides whether a message could plausibly contain
+    a course name, so detect_and_load_course doesn't burn a Haiku call (and
+    ~a second of latency) on every 'wind at my back, 150 out' mid-round.
+    Errs permissive when no course is loaded yet; demands a stronger signal
+    once one is (switches are rare and players announce them explicitly)."""
+    text_lower = text.lower()
+    if any(k in text_lower for k in _COURSE_HINT_STRONG):
+        return True
+    if _PROPER_NOUN_PAIR_RE.search(text):
+        return True
+    if not course_loaded and any(k in text_lower for k in COURSE_MENTION_KEYWORDS):
+        return True
+    return False
+
 
 # ────────────────────────────────────────────────────────────
 # Course detection / loading
@@ -544,6 +573,11 @@ def detect_and_load_course(
     # avoid wasting a Haiku call on every "thanks" or "ok".
     if len(text.split()) < 3:
         return None
+    # Keyword/proper-noun pre-filter: most mid-round messages ("165 to the
+    # pin", "made par") can't contain a course name — don't spend a Haiku
+    # call (~1s of standing-over-the-ball latency) finding that out.
+    if not might_mention_course(text, bool(current_round_state.get("course"))):
+        return None
 
     try:
         response = anthropic_client.messages.create(
@@ -697,9 +731,10 @@ def detect_and_log_score(text: str, round_state: dict) -> Optional[dict]:
         or re.search(r"\b\d+\s*(over|under)\b", text_lower)
         or re.search(r"\b(one|two|three|four|five|six|seven)\s+(over|under)\b", text_lower)
     )
-    # "shot 5" / "made 4" / "took 6" — score verb directly followed by a number
+    # "shot 5" / "made 4" / "had an eight" — score verb directly followed by
+    # a number ("an?" covers both "a five" and "an eight").
     matches_verb_number = bool(re.search(
-        r"\b(shot|made|carded|took|posted|scored|had)\s+(a\s+)?"
+        r"\b(shot|made|carded|took|posted|scored|had)\s+(an?\s+)?"
         r"(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b",
         text_lower,
     ))
