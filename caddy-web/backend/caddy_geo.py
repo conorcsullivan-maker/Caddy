@@ -358,6 +358,42 @@ def compute_relative_wind(
     }
 
 
+def gps_yards_to_green(
+    player_lat: float,
+    player_lng: float,
+    green: Optional[list],
+) -> Optional[int]:
+    """Distance in yards from the player's GPS fix to a hole's green center.
+    Returns None when out of plausible on-hole range (<5 or >700 yards) —
+    beyond that the player is probably not on the hole we think they're on,
+    and a confidently wrong number is worse than none."""
+    if not green or len(green) < 2:
+        return None
+    dist_yd = haversine_m((player_lat, player_lng), (green[0], green[1])) * 1.0936
+    if dist_yd < 5 or dist_yd > 700:
+        return None
+    return int(round(dist_yd))
+
+
+def format_gps_yardage_context(gy: Optional[dict]) -> str:
+    """Render the GPS-computed distance to the green as a prompt block.
+    Empty string when unavailable."""
+    if not gy:
+        return ""
+    yards = gy.get("yards_to_green")
+    hole = gy.get("hole")
+    return (
+        f"\n=== GPS YARDAGE (hole {hole}) ===\n"
+        f"The player's phone GPS puts them approximately {yards} yards from the "
+        f"CENTER of the green.\n"
+        f"Use this as the working distance when the player doesn't state one — "
+        f"do NOT ask 'how far have you got?' when this block is present. If the "
+        f"player states a yardage, theirs wins (they may be lasering the pin, "
+        f"not the center). Phone GPS is accurate to roughly ±10 yards, so treat "
+        f"it as 'about {yards}', never as exact.\n"
+    )
+
+
 def format_relative_wind_context(rw: Optional[dict], hole_number: Optional[int]) -> str:
     """Render relative wind as a prompt-context block for Claude. Returns
     empty string if no data — caller should fall back to ask-the-player rules."""

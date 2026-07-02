@@ -30,7 +30,8 @@ export type ChatEvent =
       speed_mph: number;
       hole_bearing_deg: number;
       wind_from_compass: string;
-    };
+    }
+  | { type: "gps_yardage"; hole: number; yards_to_green: number };
 
 export type RelativeWind = {
   description: string;

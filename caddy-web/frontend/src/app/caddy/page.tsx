@@ -28,6 +28,7 @@ export default function CaddyPage() {
   const [location, setLocation] = useState<Location>(null);
   const [weather, setWeather] = useState<WeatherSnapshot | null>(null);
   const [relativeWind, setRelativeWind] = useState<RelativeWind | null>(null);
+  const [gpsYards, setGpsYards] = useState<number | null>(null);
   const [locationStatus, setLocationStatus] = useState<"idle" | "asking" | "granted" | "denied">("idle");
 
   const [photoFile, setPhotoFile] = useState<File | null>(null);
@@ -180,6 +181,7 @@ export default function CaddyPage() {
       if (round_state) setRoundState(round_state);
       if (w) setWeather(w);
       setRelativeWind(extractRelativeWind(events));
+      setGpsYards(extractGpsYards(events));
       speakText(reply);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong");
@@ -256,6 +258,7 @@ export default function CaddyPage() {
           if (round_state) setRoundState(round_state);
           if (w) setWeather(w);
           setRelativeWind(extractRelativeWind(events));
+          setGpsYards(extractGpsYards(events));
           speakText(reply);
         } catch (err) {
           setError(err instanceof Error ? err.message : "Voice failed");
@@ -315,6 +318,7 @@ export default function CaddyPage() {
       if (round_state) setRoundState(round_state);
       if (w) setWeather(w);
       setRelativeWind(extractRelativeWind(events));
+      setGpsYards(extractGpsYards(events));
       speakText(reply);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Photo upload failed");
@@ -333,6 +337,7 @@ export default function CaddyPage() {
     setMessages([]);
     setRoundState({ hole_scores: [], current_hole: 1 });
     setRelativeWind(null);
+    setGpsYards(null);
   }
 
   async function handleLogout() {
@@ -438,6 +443,7 @@ export default function CaddyPage() {
                     (roundState.tee?.tee_name ? ` · ${roundState.tee.tee_name}` : "")
                   : "No course loaded"}
                 {` · ${formatHoleStatus(roundState)}`}
+                {gpsYards != null ? ` · ~${gpsYards} yds to green` : ""}
               </span>
               <span className="text-cream/50 text-[10px]">{scorecardOpen ? "▴" : "▾"}</span>
             </div>
@@ -612,6 +618,19 @@ export default function CaddyPage() {
       </div>
     </main>
   );
+}
+
+// Pull the most recent gps_yardage event out of a chat response — the
+// auto-rangefinder reading shown in the round bar. Null when the backend
+// couldn't compute one this turn (no GPS fix, no cached geometry, or the
+// player isn't plausibly on the tracked hole).
+function extractGpsYards(events?: ChatEvent[]): number | null {
+  if (!events) return null;
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i];
+    if (e.type === "gps_yardage") return e.yards_to_green;
+  }
+  return null;
 }
 
 // Pull the most recent relative_wind event out of a chat response. Used to
