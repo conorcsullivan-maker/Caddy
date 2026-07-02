@@ -845,9 +845,11 @@ function formatHoleStatus(state: RoundState): string {
   if (played.length === 0) return `Hole ${cur}`;
   const total = played.reduce((a, h) => a + (h.score ?? 0), 0);
   const parTotal = played.reduce((a, h) => a + (h.par ?? 0), 0);
-  const vs = parTotal ? total - parTotal : null;
-  const vsLabel = vs === null ? "" : vs === 0 ? "E" : vs > 0 ? ` (+${vs})` : ` (${vs})`;
-  return `Hole ${cur} · ${total}${vsLabel}`;
+  // Score reads relative to par only (+1 / E / -3), like a leaderboard.
+  // Total strokes only appears when pars are unknown and vs-par can't be computed.
+  if (!parTotal) return `Hole ${cur} · ${total}`;
+  const vs = total - parTotal;
+  return `Hole ${cur} · ${vs === 0 ? "E" : vs > 0 ? `+${vs}` : `${vs}`}`;
 }
 
 function EmptyState({ firstName }: { firstName: string }) {
