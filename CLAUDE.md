@@ -126,7 +126,15 @@ Events (`round_state`, `weather`, `events: ChatEvent[]`) are returned to the fro
 
 ## Recent significant changes (chronological, most recent first)
 
-**Auto-wind pipeline** *(uncommitted as of 2026-05-24)* — `caddy_geo.py` fetches golf=hole/tee/green from OSM Overpass around a course's lat/lng (from golfcourseapi.com's own coordinates), spatially pairs tees + greens to their hole via containment in the hole polygon, computes tee→green bearing, and decomposes NWS wind into headwind/tailwind + crosswind from player POV. Cached per course in `course_geometry` table. Prompt gets a `COMPUTED RELATIVE WIND` block Claude must use verbatim; when unavailable it falls back to "ask once per hole, reuse the answer." Weather strip on `/caddy` shows an "auto" badge with the direction. Coverage of golfcourseapi.com sample: ~68% STRONG+PARTIAL.
+**Test suite** *(2026-07-02, commit `f820281`)* — 94 pytest cases in `caddy-web/backend/tests/` covering the detection layer (score parsing, hole extraction, negations), wind math conventions, GPS yardage, and prompt helpers. Anthropic client stubbed to raise — tests never touch the network. Run: `cd caddy-web/backend && ./venv/bin/python -m pytest tests/`. **Run these before touching caddy_round.py, caddy_geo.py, or caddy_engine.py helpers.**
+
+**PWA icons** *(2026-07-02, commit `779d2b6`)* — icon-192/512 + maskable in manifest, Next file-convention `src/app/icon.png` + `apple-icon.png`.
+
+**Auto-yardage (GPS rangefinder)** *(2026-07-02, commit `57ef05e`)* — player lat/lng × cached green centroids → `GPS YARDAGE` prompt block + `gps_yardage` chat event + "~152 yds to green" in the round bar. Player-stated yardage always wins over GPS. 5–700 yd sanity window.
+
+**Latency pass** *(2026-07-02, commit `b6c8ace`)* — `might_mention_course()` pre-filter gates the per-message course-detection Haiku call; hazard-note Haiku moved to a background thread; weather cache-miss fetches forecast+alerts in parallel. Typical mid-round message: zero Haiku calls before the Opus reply.
+
+**Auto-wind pipeline** *(committed + pushed 2026-07-02, commit `0d148be`; built 2026-05-24)* — `caddy_geo.py` fetches golf=hole/tee/green from OSM Overpass around a course's lat/lng (from golfcourseapi.com's own coordinates), spatially pairs tees + greens to their hole via containment in the hole polygon, computes tee→green bearing, and decomposes NWS wind into headwind/tailwind + crosswind from player POV. Cached per course in `course_geometry` table. Prompt gets a `COMPUTED RELATIVE WIND` block Claude must use verbatim; when unavailable it falls back to "ask once per hole, reuse the answer." Weather strip on `/caddy` shows an "auto" badge with the direction. Coverage of golfcourseapi.com sample: ~68% STRONG+PARTIAL. **Not yet validated on a live round.**
 
 **Conversation .docx export** *(2026-05-21, commit `2b1d390`)* — owner-only download (Conor + Drew) for archived chats and the active chat. Endpoints allowlist-gated. Also fixed the latent bug where `save_conversation` was truncating history to 60 messages on every save (only the per-turn Claude context should be capped, not persistence).
 
@@ -150,12 +158,13 @@ Events (`round_state`, `weather`, `events: ChatEvent[]`) are returned to the fro
 
 ---
 
-## Current priorities (from Drew's on-course feedback + roadmap)
+## Current priorities (as of 2026-07-02)
 
-1. **Commit + push the auto-wind feature** so Drew's next round tests it.
-2. **Approach-shot logging beyond driver** — currently only Driver is inferred from remaining-yardage. Need to parse "hit 7-iron from 145" out of player messages and log to `shot_stats[club].course`.
-3. **PWA icons** for home-screen install polish (manifest exists, PNGs don't).
-4. **Trackman session deletion UI** (dedup column exists, no DELETE endpoint).
-5. **Course confirmation prompt** ("Butter Brook in Westford, MA — that right?") before attributing notes.
+1. **⚠️ RENDER SERVICE SUSPENDED** — as of 2026-07-02 the backend at caddy-api.onrender.com returns 503 with `x-render-routing: suspend` (likely a billing lapse during Conor's June vacation). Only Conor can resume it in the Render dashboard. Until then the live beta is fully down (frontend loads, all API calls fail). On resume, Render should deploy the latest main.
+2. **Validate auto-wind + auto-yardage on a live round** (Drew's next round).
+3. **Approach-shot logging beyond driver** — parse "hit 7-iron from 145" out of player messages and log to `shot_stats[club].course`.
+4. **Main.py refactor** — split into routers (auth/admin/chat/stats), fix JSON-column read-modify-write races, session expiry, unsalted PIN hashes. Tests exist now; safe to do.
+5. **Trackman session deletion UI** (dedup column exists, no DELETE endpoint).
+6. **Phone-camera lie-reading prototype** — extend the existing Claude vision path ("photo of your lie" → lie/trouble assessment folded into club advice). Groundwork for the wearable vision; no hardware needed.
 
-Long-term / vision (not next-sprint work): iPhone native app (RN vs Swift undecided), wearable-camera swing analysis, terrain analysis via USGS 3DEP, paired-play mode, Postgres migration around ~50 concurrent users.
+Decided: iPhone app will be **React Native (Expo)**, built after the refactor stabilizes the API contract. Wearable (glasses) integration deliberately deferred until the RN app exists and lie-reading proves out. Long-term: terrain via USGS 3DEP, paired-play mode, Postgres at ~50 concurrent users.
