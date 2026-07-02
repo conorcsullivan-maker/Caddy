@@ -207,9 +207,10 @@ def format_weather_context(weather: dict) -> str:
 
     lines.extend([
         "",
-        "Use this weather data when advising on club selection. Factor wind speed and",
-        "direction into yardage calculations. If precipitation is in the next hour, mention",
-        "it. If the player asks about wind, use the actual measured numbers above.",
+        "Use this weather data when advising on club selection. Factor temperature,",
+        "humidity, and precipitation into the recommendation. For WIND direction,",
+        "follow the wind-handling rules in the system prompt — the compass direction",
+        "above is geographic, not relative to the player.",
     ])
 
     return "\n".join(lines)

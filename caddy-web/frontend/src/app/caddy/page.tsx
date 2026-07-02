@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
-import { api, type User, type RoundState, type WeatherSnapshot } from "@/lib/api";
+import { api, type User, type RoundState, type WeatherSnapshot, type RelativeWind, type ChatEvent } from "@/lib/api";
 
 type Message = { role: "user" | "assistant"; content: string };
 type Location = { lat: number; lng: number } | null;
@@ -27,6 +27,7 @@ export default function CaddyPage() {
   const [roundState, setRoundState] = useState<RoundState>({ hole_scores: [], current_hole: 1 });
   const [location, setLocation] = useState<Location>(null);
   const [weather, setWeather] = useState<WeatherSnapshot | null>(null);
+  const [relativeWind, setRelativeWind] = useState<RelativeWind | null>(null);
   const [locationStatus, setLocationStatus] = useState<"idle" | "asking" | "granted" | "denied">("idle");
 
   const [photoFile, setPhotoFile] = useState<File | null>(null);
@@ -174,10 +175,11 @@ export default function CaddyPage() {
     setMessages((m) => [...m, { role: "user", content: text }]);
     setSending(true);
     try {
-      const { reply, round_state, weather: w } = await api.caddy.message(text, location);
+      const { reply, round_state, weather: w, events } = await api.caddy.message(text, location);
       setMessages((m) => [...m, { role: "assistant", content: reply }]);
       if (round_state) setRoundState(round_state);
       if (w) setWeather(w);
+      setRelativeWind(extractRelativeWind(events));
       speakText(reply);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong");
@@ -243,7 +245,7 @@ export default function CaddyPage() {
         }
         setTranscribing(true);
         try {
-          const { transcript, reply, round_state, weather: w } = await api.caddy.voice(blob, location);
+          const { transcript, reply, round_state, weather: w, events } = await api.caddy.voice(blob, location);
           // Skip the user bubble when Whisper didn't catch anything — Caddy
           // will respond with a "say it again?" message on its own.
           setMessages((m) => [
@@ -253,6 +255,7 @@ export default function CaddyPage() {
           ]);
           if (round_state) setRoundState(round_state);
           if (w) setWeather(w);
+          setRelativeWind(extractRelativeWind(events));
           speakText(reply);
         } catch (err) {
           setError(err instanceof Error ? err.message : "Voice failed");
@@ -307,10 +310,11 @@ export default function CaddyPage() {
     setSending(true);
     setError(null);
     try {
-      const { reply, round_state, weather: w } = await api.caddy.photo(file, text || undefined, location);
+      const { reply, round_state, weather: w, events } = await api.caddy.photo(file, text || undefined, location);
       setMessages((m) => [...m, { role: "assistant", content: reply }]);
       if (round_state) setRoundState(round_state);
       if (w) setWeather(w);
+      setRelativeWind(extractRelativeWind(events));
       speakText(reply);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Photo upload failed");
@@ -328,6 +332,7 @@ export default function CaddyPage() {
     await api.caddy.reset();
     setMessages([]);
     setRoundState({ hole_scores: [], current_hole: 1 });
+    setRelativeWind(null);
   }
 
   async function handleLogout() {
@@ -393,7 +398,7 @@ export default function CaddyPage() {
 
       {/* Weather strip — only shows when we have live data */}
       {weather?.current && (
-        <WeatherStrip weather={weather} />
+        <WeatherStrip weather={weather} relativeWind={relativeWind} />
       )}
       {locationStatus === "denied" && (
         <div className="bg-cream/60 border-b border-line px-5 py-2 text-[11px] text-muted text-center flex-shrink-0">
@@ -609,7 +614,28 @@ export default function CaddyPage() {
   );
 }
 
-function WeatherStrip({ weather }: { weather: WeatherSnapshot }) {
+// Pull the most recent relative_wind event out of a chat response. Used to
+// keep the weather strip showing the latest auto-computed wind. Returns null
+// when none came back this turn (geometry not cached yet, or no course loaded).
+function extractRelativeWind(events?: ChatEvent[]): RelativeWind | null {
+  if (!events) return null;
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i];
+    if (e.type === "relative_wind") {
+      return {
+        description: e.description,
+        headwind_mph: e.headwind_mph,
+        crosswind_mph: e.crosswind_mph,
+        speed_mph: e.speed_mph,
+        hole_bearing_deg: e.hole_bearing_deg,
+        wind_from_compass: e.wind_from_compass,
+      };
+    }
+  }
+  return null;
+}
+
+function WeatherStrip({ weather, relativeWind }: { weather: WeatherSnapshot; relativeWind: RelativeWind | null }) {
   const cur = weather.current;
   if (!cur) return null;
   const hasCriticalAlert = (weather.alerts || []).some((a) => {
@@ -633,7 +659,7 @@ function WeatherStrip({ weather }: { weather: WeatherSnapshot }) {
 
   return (
     <div className="bg-paper border-b border-line px-5 py-1.5 flex-shrink-0">
-      <div className="max-w-2xl mx-auto w-full text-[11px] text-muted flex items-center gap-3">
+      <div className="max-w-2xl mx-auto w-full text-[11px] text-muted flex items-center gap-3 flex-wrap">
         <span className="eyebrow text-gold">Weather</span>
         <span className="text-ink truncate">
           {cur.temperature}°{cur.temperature_unit || "F"}
@@ -641,6 +667,12 @@ function WeatherStrip({ weather }: { weather: WeatherSnapshot }) {
           {cur.wind_speed ? ` · wind ${cur.wind_speed} ${cur.wind_direction || ""}` : ""}
           {cur.precip_chance ? ` · ${cur.precip_chance}% rain` : ""}
         </span>
+        {relativeWind && (
+          <span className="text-forest flex items-center gap-1.5">
+            <span className="text-[9px] eyebrow bg-forest/10 text-forest px-1.5 py-0.5 rounded-full">auto</span>
+            <span className="text-[11px]">{relativeWind.description}</span>
+          </span>
+        )}
       </div>
     </div>
   );

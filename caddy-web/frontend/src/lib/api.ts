@@ -21,7 +21,25 @@ export type ChatEvent =
   | { type: "drive_inferred"; hole: number; hole_yardage: number; remaining: number; inferred_drive: number }
   | { type: "round_complete"; course_name: string; total_score?: number | null; differential?: number | null; handicap?: number | null }
   | { type: "weather_alert"; alerts: string[] }
-  | { type: "transcript_unclear" };
+  | { type: "transcript_unclear" }
+  | {
+      type: "relative_wind";
+      description: string;
+      headwind_mph: number;
+      crosswind_mph: number;
+      speed_mph: number;
+      hole_bearing_deg: number;
+      wind_from_compass: string;
+    };
+
+export type RelativeWind = {
+  description: string;
+  headwind_mph: number;
+  crosswind_mph: number;
+  speed_mph: number;
+  hole_bearing_deg: number;
+  wind_from_compass: string;
+};
 
 export type WeatherSnapshot = {
   current?: {

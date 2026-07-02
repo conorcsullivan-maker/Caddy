@@ -31,6 +31,9 @@ from caddy_round import (
     detect_course_note, save_hole_note,
 )
 from caddy_weather import fetch_weather, format_weather_context, has_critical_alert
+from caddy_geo import (
+    fetch_course_geometry, compute_relative_wind, format_relative_wind_context,
+)
 
 # ────────────────────────────────────────────────────────────
 # Setup
@@ -171,6 +174,20 @@ def init_db():
             user_id INTEGER NOT NULL,
             created_at TEXT NOT NULL,
             FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        )
+    """)
+    # Course geometry cache. Courses don't move, so successful fetches live
+    # forever; failed fetches (no_data) can be retried after a week. Keyed
+    # by source+id so we don't collide with future synthetic-course IDs.
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS course_geometry (
+            source TEXT NOT NULL,
+            course_id TEXT NOT NULL,
+            club_name TEXT,
+            has_data INTEGER NOT NULL DEFAULT 0,
+            geometry_json TEXT,
+            fetched_at TEXT NOT NULL,
+            PRIMARY KEY (source, course_id)
         )
     """)
     conn.commit()
@@ -347,6 +364,147 @@ def record_trackman_session_stats(user_id: int, per_club_stats: dict) -> None:
         _merge_bucket_into_bucket(club_data["trackman"], session_bucket)
         stats[club] = club_data
     _save_shot_stats(user_id, stats)
+
+
+# ────────────────────────────────────────────────────────────
+# Course geometry cache (OSM hole layouts for auto-wind)
+#
+# Courses don't move, so once we have hole-level geometry it lives forever.
+# If a fetch returned no_data, we hold off on retry for a week — OSM
+# contributors may have added the course in the meantime.
+# ────────────────────────────────────────────────────────────
+GEO_RETRY_AFTER_DAYS = 7
+
+
+def _course_cache_key(course: dict) -> Optional[tuple]:
+    """Stable (source, id) key for caching geometry per course. Returns None
+    if the course doesn't have a usable id."""
+    if not course:
+        return None
+    cid = course.get("id")
+    if cid is None:
+        return None
+    # Synthetic courses (from scorecard photos) get string ids like 'syn_*';
+    # API-sourced courses get integer ids. Normalize both to text for the PK.
+    source = "syn" if isinstance(cid, str) and cid.startswith("syn") else "gca"
+    return (source, str(cid))
+
+
+def _load_course_geometry(course: dict) -> Optional[dict]:
+    """Look up cached geometry. Returns the parsed dict if available
+    (even when has_data=False, the cache entry itself signals 'we tried').
+    Returns None when there's no cache row yet."""
+    key = _course_cache_key(course)
+    if key is None:
+        return None
+    source, cid = key
+    with db() as conn:
+        row = conn.execute(
+            "SELECT has_data, geometry_json, fetched_at FROM course_geometry "
+            "WHERE source = ? AND course_id = ?",
+            (source, cid),
+        ).fetchone()
+    if not row:
+        return None
+    try:
+        geo = json.loads(row["geometry_json"]) if row["geometry_json"] else {"has_data": False, "holes": {}}
+    except Exception:
+        geo = {"has_data": False, "holes": {}}
+    geo["_fetched_at"] = row["fetched_at"]
+    geo["_has_data"] = bool(row["has_data"])
+    return geo
+
+
+def _save_course_geometry(course: dict, geometry: dict) -> None:
+    key = _course_cache_key(course)
+    if key is None:
+        return
+    source, cid = key
+    name = course.get("club_name") or course.get("course_name") or ""
+    with db() as conn:
+        conn.execute(
+            """INSERT INTO course_geometry (source, course_id, club_name, has_data, geometry_json, fetched_at)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(source, course_id) DO UPDATE SET
+                 club_name = excluded.club_name,
+                 has_data = excluded.has_data,
+                 geometry_json = excluded.geometry_json,
+                 fetched_at = excluded.fetched_at""",
+            (source, cid, name, 1 if geometry.get("has_data") else 0,
+             json.dumps(geometry), now_iso()),
+        )
+
+
+def _should_retry_geometry_fetch(geo: Optional[dict]) -> bool:
+    """If we have nothing cached, fetch. If the cache says no_data but the
+    entry is older than GEO_RETRY_AFTER_DAYS, try again (OSM may have been
+    edited)."""
+    if geo is None:
+        return True
+    if geo.get("_has_data"):
+        return False
+    fetched = geo.get("_fetched_at") or ""
+    try:
+        dt = datetime.fromisoformat(fetched.replace("Z", "+00:00"))
+        age_days = (datetime.now(timezone.utc) - dt).total_seconds() / 86400
+        return age_days > GEO_RETRY_AFTER_DAYS
+    except Exception:
+        return True
+
+
+def _fetch_and_cache_geometry(course: dict) -> None:
+    """Synchronous geometry fetch + persist. Designed to be called from a
+    background thread so the user's request isn't blocked by Overpass."""
+    try:
+        loc = course.get("location") or {}
+        lat = loc.get("latitude")
+        lng = loc.get("longitude")
+        if lat is None or lng is None:
+            # Without coords, mark as no_data so we don't keep retrying
+            _save_course_geometry(course, {"has_data": False, "hole_count": 0, "holes": {}})
+            return
+        geo = fetch_course_geometry(float(lat), float(lng))
+        _save_course_geometry(course, geo)
+        if geo.get("has_data"):
+            print(f"[geo] cached geometry for {course.get('club_name')}: {geo['hole_count']} holes")
+        else:
+            print(f"[geo] no OSM data for {course.get('club_name')} — will retry in {GEO_RETRY_AFTER_DAYS}d")
+    except Exception as e:
+        print(f"[geo] fetch failed for {course.get('club_name')}: {e}")
+
+
+def _ensure_course_geometry_async(course: dict) -> None:
+    """If geometry isn't cached (or is stale no_data), kick off a background
+    fetch. Doesn't block. The first message of a round won't have computed
+    wind yet, but every subsequent message will."""
+    geo = _load_course_geometry(course)
+    if not _should_retry_geometry_fetch(geo):
+        return
+    import threading
+    threading.Thread(
+        target=_fetch_and_cache_geometry, args=(course,), daemon=True
+    ).start()
+
+
+def _relative_wind_for_current_hole(round_state: dict, weather: Optional[dict]) -> Optional[dict]:
+    """Look up the current hole's bearing in the cached geometry, combine
+    with the NWS wind, and return the computed relative-wind dict. Returns
+    None when we don't have enough data (geometry missing, no wind, etc.)."""
+    course = round_state.get("course") or {}
+    geo = _load_course_geometry(course)
+    if not geo or not geo.get("_has_data"):
+        return None
+    current_hole = round_state.get("current_hole") or 1
+    hole_data = (geo.get("holes") or {}).get(str(current_hole))
+    if not hole_data:
+        return None
+    bearing = hole_data.get("bearing_deg")
+    cur = (weather or {}).get("current") or {}
+    return compute_relative_wind(
+        bearing,
+        cur.get("wind_direction"),
+        cur.get("wind_speed"),
+    )
 
 
 def user_dict(row: sqlite3.Row) -> dict:
@@ -847,6 +1005,10 @@ def process_user_message(user: dict, message: str,
             round_state["started_at"] = round_state.get("started_at") or now_iso()
         course_loaded_now = True
         course_load_distance = course_load.get("distance_miles")
+        # Kick off OSM geometry fetch in the background so auto-wind is
+        # available from the second message onward (Overpass is too slow
+        # to block this reply).
+        _ensure_course_geometry_async(round_state["course"])
         events.append({
             "type": "course_loaded",
             "course_name": course_load["course"].get("club_name"),
@@ -898,7 +1060,14 @@ def process_user_message(user: dict, message: str,
     course_ctx = format_course_context(round_state)
     score_ctx = format_score_context(round_state)
     weather_ctx = format_weather_context(weather) if weather else ""
-    round_context = course_ctx + score_ctx + weather_ctx
+    # Auto-computed relative wind for the current hole, when we have cached
+    # OSM geometry. When not available, Claude falls back to the prompt rule
+    # ("ask once per hole, then reuse the player's answer").
+    relative_wind = _relative_wind_for_current_hole(round_state, weather)
+    wind_ctx = format_relative_wind_context(relative_wind, round_state.get("current_hole"))
+    round_context = course_ctx + score_ctx + weather_ctx + wind_ctx
+    if relative_wind:
+        events.append({"type": "relative_wind", **relative_wind})
 
     # Course context handling — never block on confirmation. Three cases:
     if course_loaded_now:
@@ -1225,6 +1394,7 @@ async def caddy_photo(
             round_state["course"] = course_data
             round_state["tee"] = tee
             round_state["started_at"] = round_state.get("started_at") or now_iso()
+            _ensure_course_geometry_async(course_data)
             events.append({
                 "type": "course_loaded",
                 "course_name": course_data.get("club_name"),
