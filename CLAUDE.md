@@ -133,6 +133,8 @@ Events (`round_state`, `weather`, `events: ChatEvent[]`) are returned to the fro
 
 ## Recent significant changes (chronological, most recent first)
 
+**GPS shot tracking (rung 2)** *(2026-07-03)* — `last_fix` + `pending_shot` in `active_round_state`; `detect_gps_shot` (caddy_round.py) turns same-hole movement between messages into a shot; Caddy asks for the club, `extract_club_mention` resolves bare answers ("the 7"). Guards: score log drops the fix, course load clears fix+pending, drive/approach detection suppress duplicates. Emits `shot_logged` with `source: "gps"`.
+
 **Approach-shot logging** *(2026-07-03)* — `detect_approach_shot` in caddy_round.py parses "hit 7-iron from 145" (+ miss direction) out of chat and logs to `shot_stats[club].course` via the pipeline; clubs normalize to Trackman labels so buckets pool. Questions/intent don't log. Also fixed "took 6 iron" reading as a score of 6. Emits `shot_logged` event. Regex-only — no LLM call.
 
 **Lie reading (photo → advice)** *(2026-07-03)* — the photo endpoint classifies each image with a Haiku vision call (`classify_photo_subject`): scorecards keep the extraction flow, on-course scene photos flow through `process_user_message` with the image attached to the Opus turn plus `SCENE_PHOTO_INSTRUCTIONS` (lie/slope/trouble assessment; never estimates yardage from a photo). This is the interpretation layer for the future wearable-camera work. Verified end-to-end locally.
@@ -173,7 +175,7 @@ Events (`round_state`, `weather`, `events: ChatEvent[]`) are returned to the fro
 
 ## Current priorities (as of 2026-07-03)
 
-1. **Validate on a live round** (Drew's next): auto-wind, auto-yardage, lie-reading photos, approach-shot logging.
+1. **Validate on a live round** (Drew's next): auto-wind, auto-yardage, lie-reading photos, approach-shot logging, GPS shot tracking.
 2. **React Native (Expo) iPhone app** — the API contract is now stable post-refactor; generate a typed client from FastAPI's OpenAPI schema first.
 3. **Trackman session deletion UI** (dedup column exists, no DELETE endpoint).
 
