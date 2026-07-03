@@ -133,6 +133,8 @@ Events (`round_state`, `weather`, `events: ChatEvent[]`) are returned to the fro
 
 ## Recent significant changes (chronological, most recent first)
 
+**Approach-shot logging** *(2026-07-03)* — `detect_approach_shot` in caddy_round.py parses "hit 7-iron from 145" (+ miss direction) out of chat and logs to `shot_stats[club].course` via the pipeline; clubs normalize to Trackman labels so buckets pool. Questions/intent don't log. Also fixed "took 6 iron" reading as a score of 6. Emits `shot_logged` event. Regex-only — no LLM call.
+
 **Lie reading (photo → advice)** *(2026-07-03)* — the photo endpoint classifies each image with a Haiku vision call (`classify_photo_subject`): scorecards keep the extraction flow, on-course scene photos flow through `process_user_message` with the image attached to the Opus turn plus `SCENE_PHOTO_INSTRUCTIONS` (lie/slope/trouble assessment; never estimates yardage from a photo). This is the interpretation layer for the future wearable-camera work. Verified end-to-end locally.
 
 **Backend refactor** *(2026-07-02/03)* — main.py split into `db.py` / `security.py` / `store.py` / `deps.py` / `pipeline.py` / `routers/{auth,profile,chat,admin}.py`. Sessions now expire server-side (30d); PINs upgraded to salted PBKDF2 transparently on login; shot_stats writes are single-transaction (BEGIN IMMEDIATE); active-conversation download route ordering fixed.
@@ -171,9 +173,8 @@ Events (`round_state`, `weather`, `events: ChatEvent[]`) are returned to the fro
 
 ## Current priorities (as of 2026-07-03)
 
-1. **Validate on a live round** (Drew's next): auto-wind, auto-yardage, and lie-reading photos.
-2. **Approach-shot logging beyond driver** — parse "hit 7-iron from 145" out of player messages and log to `shot_stats[club].course`.
-3. **React Native (Expo) iPhone app** — the API contract is now stable post-refactor; generate a typed client from FastAPI's OpenAPI schema first.
-4. **Trackman session deletion UI** (dedup column exists, no DELETE endpoint).
+1. **Validate on a live round** (Drew's next): auto-wind, auto-yardage, lie-reading photos, approach-shot logging.
+2. **React Native (Expo) iPhone app** — the API contract is now stable post-refactor; generate a typed client from FastAPI's OpenAPI schema first.
+3. **Trackman session deletion UI** (dedup column exists, no DELETE endpoint).
 
 Decided: iPhone app will be **React Native (Expo)**. Wearable (glasses) integration deliberately deferred until the RN app exists and lie-reading proves out. Long-term: terrain via USGS 3DEP, paired-play mode, Postgres at ~50 concurrent users.
