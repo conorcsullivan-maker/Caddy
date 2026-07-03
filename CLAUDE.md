@@ -10,6 +10,10 @@ This CLAUDE.md is loaded automatically when working anywhere under `~/Desktop/Ca
 
 ```
 Caddy/
+├── caddy-mobile/                       Expo/React Native iPhone app (SDK 57, TS)
+│   ├── src/api.ts                      typed client, bearer-token auth — mirror of frontend/src/lib/api.ts
+│   ├── src/screens/                    LoginScreen, ChatScreen
+│   └── README.md                       run instructions (npx expo start → Expo Go)
 ├── caddy-web/
 │   ├── frontend/                       Next.js 16 + Tailwind v4 + TS → deployed to Vercel
 │   │   ├── AGENTS.md                   READ THIS before writing Next.js code (breaking changes vs training data)
@@ -133,6 +137,8 @@ Events (`round_state`, `weather`, `events: ChatEvent[]`) are returned to the fro
 
 ## Recent significant changes (chronological, most recent first)
 
+**Caddy Mobile v0.1** *(2026-07-03)* — Expo/RN app in `caddy-mobile/` (login, chat, GPS per message, round bar, weather, camera). Bearer-token auth added to the backend (`deps.py` accepts `Authorization: Bearer`, login returns `token` in body); mobile talks straight to Render, no proxy. Run: `cd caddy-mobile && npx expo start` → Expo Go. Next: voice, background location (dev build), profile screens.
+
 **GPS shot tracking (rung 2)** *(2026-07-03)* — `last_fix` + `pending_shot` in `active_round_state`; `detect_gps_shot` (caddy_round.py) turns same-hole movement between messages into a shot; Caddy asks for the club, `extract_club_mention` resolves bare answers ("the 7"). Guards: score log drops the fix, course load clears fix+pending, drive/approach detection suppress duplicates. Emits `shot_logged` with `source: "gps"`.
 
 **Approach-shot logging** *(2026-07-03)* — `detect_approach_shot` in caddy_round.py parses "hit 7-iron from 145" (+ miss direction) out of chat and logs to `shot_stats[club].course` via the pipeline; clubs normalize to Trackman labels so buckets pool. Questions/intent don't log. Also fixed "took 6 iron" reading as a score of 6. Emits `shot_logged` event. Regex-only — no LLM call.
@@ -176,7 +182,7 @@ Events (`round_state`, `weather`, `events: ChatEvent[]`) are returned to the fro
 ## Current priorities (as of 2026-07-03)
 
 1. **Validate on a live round** (Drew's next): auto-wind, auto-yardage, lie-reading photos, approach-shot logging, GPS shot tracking.
-2. **React Native (Expo) iPhone app** — the API contract is now stable post-refactor; generate a typed client from FastAPI's OpenAPI schema first.
+2. **Caddy Mobile next iterations** — voice (tap-to-talk via expo-av → /api/caddy/voice, TTS playback), background location for every-shot tracking (needs a dev build, not Expo Go), profile/rounds screens, TestFlight distribution (needs Apple Developer account — Conor's task).
 3. **Trackman session deletion UI** (dedup column exists, no DELETE endpoint).
 
 Decided: iPhone app will be **React Native (Expo)**. Wearable (glasses) integration deliberately deferred until the RN app exists and lie-reading proves out. Long-term: terrain via USGS 3DEP, paired-play mode, Postgres at ~50 concurrent users.
