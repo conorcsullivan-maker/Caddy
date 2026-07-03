@@ -137,7 +137,7 @@ PER-SHOT INFO:
   2. If no computed wind is shown but the player ALREADY TOLD YOU the relative wind earlier on this hole (look back in the conversation), use what they said. Do not re-ask each shot.
   3. If neither is true, ASK ONCE on the first shot of this hole ("Wind hitting you from where?"). After the player answers, REUSE that answer for the rest of this hole.
   When the player advances to a new hole, the previous hole's wind info no longer applies — you may need to ask again if no computed wind is provided. The weather strip shows COMPASS wind direction (e.g. "wind 16 mph W"), which is geographic, not relative — never use compass direction alone to claim "tailwind" or "off the left."
-- Lie (fairway, rough, bunker, hardpan)
+- Lie (fairway, rough, bunker, hardpan). The player can snap a PHOTO of their ball with the camera button and you'll see the actual lie — if their description of a tricky lie is vague, offer that once ("snap a photo of it and I'll take a look").
 - Any trouble to carry (water, bunkers, OB)
 
 If you already have all of this, go straight to the recommendation.
@@ -384,18 +384,97 @@ def extract_scorecard_from_image(image_bytes: bytes, media_type: str = "image/jp
         return None
 
 
+def classify_photo_subject(image_bytes: bytes, media_type: str = "image/jpeg") -> str:
+    """Cheap Haiku vision call: is this photo a SCORECARD (load the course from
+    it) or an on-course SCENE (lie/shot situation — feed it to the caddy)?
+    Returns "scorecard" or "scene". Falls back to "scorecard" on any failure,
+    which preserves the original photo-endpoint behavior."""
+    if not anthropic_client:
+        return "scorecard"
+    try:
+        response = anthropic_client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=10,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": media_type,
+                            "data": base64.standard_b64encode(image_bytes).decode(),
+                        },
+                    },
+                    {
+                        "type": "text",
+                        "text": (
+                            "Classify this photo with ONE word.\n"
+                            "Answer 'scorecard' if it shows a golf scorecard, course guide, "
+                            "or any printed/handwritten card with hole numbers and yardages.\n"
+                            "Answer 'scene' if it shows anything else — a golf ball on grass, "
+                            "a fairway, rough, a bunker, a view toward a green, a player, "
+                            "or any outdoor golf scene.\n"
+                            "One word only: scorecard or scene."
+                        ),
+                    },
+                ],
+            }],
+        )
+        answer = (response.content[0].text or "").strip().lower()
+        return "scene" if "scene" in answer else "scorecard"
+    except Exception as e:
+        print(f"[photo] classification failed, assuming scorecard: {e}")
+        return "scorecard"
+
+
+# Instructions attached to the Claude turn when the player sends a photo of
+# their shot situation (not a scorecard). Kept out of BASE_PROMPT so text-only
+# turns don't pay for it.
+SCENE_PHOTO_INSTRUCTIONS = """The player just sent a PHOTO of their current shot situation. Look at it carefully and assess what you can ACTUALLY SEE:
+- Lie quality: fairway / rough (how deep is the ball sitting?) / sand (clean lie vs fried egg) / hardpan / pine straw. Is the ball sitting up or down?
+- Slope, if visible: uphill / downhill lie, ball above or below feet.
+- Visible trouble between the ball and the target: water, bunkers, trees, OB stakes.
+- Anything notable about the stance area.
+Fold what you see into your recommendation along with the usual factors (distance, wind, the player's tendencies and stats). Reference what you SEE in the photo ("that ball is sitting down in the rough, so...") so the player knows you actually looked.
+HARD RULES for photos:
+- NEVER estimate the yardage from the photo. Use the GPS yardage block, the player's stated number, or ask.
+- If the photo is too unclear to judge the lie, say what you can't tell and ask ONE specific question instead of guessing.
+- A bad lie changes the recommendation: deep rough = take more club and get back to the fairway; fried egg = play it back, accept it runs out; ball above feet = expect a pull/draw."""
+
+
 def caddy_reply(user: dict, conversation_history: list[dict], new_message: str,
-                round_context: str = "") -> str:
+                round_context: str = "",
+                image_bytes: Optional[bytes] = None,
+                image_media_type: str = "image/jpeg") -> str:
     """Send the latest user message to Claude with full context (player + active round)
-    and return the caddy's response. Falls back to a clear error message if the
-    Anthropic API itself fails (out of credits, rate limit, outage) so the
-    frontend gets a usable reply instead of a generic 500."""
+    and return the caddy's response. When image_bytes is provided, the current
+    turn is multimodal — the photo plus the text. Falls back to a clear error
+    message if the Anthropic API itself fails (out of credits, rate limit,
+    outage) so the frontend gets a usable reply instead of a generic 500."""
     system = build_system_prompt(user) + (round_context or "")
     # Only the last N messages get re-sent to Claude per turn — the full
     # history is still in the DB. This stops cost from ballooning quadratically
     # over a long round (otherwise message #150 re-pays for messages #1–149).
     recent = (conversation_history or [])[-CLAUDE_CONTEXT_MESSAGES:]
-    messages = recent + [{"role": "user", "content": new_message}]
+    if image_bytes:
+        current_turn = {
+            "role": "user",
+            "content": [
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": image_media_type,
+                        "data": base64.standard_b64encode(image_bytes).decode(),
+                    },
+                },
+                {"type": "text", "text": new_message},
+            ],
+        }
+    else:
+        current_turn = {"role": "user", "content": new_message}
+    messages = recent + [current_turn]
     try:
         response = anthropic_client.messages.create(
             model="claude-opus-4-7",

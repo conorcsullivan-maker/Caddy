@@ -7,7 +7,10 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response as FastAPIResponse
 from pydantic import BaseModel, Field
 
-from caddy_engine import caddy_reply, extract_scorecard_from_image, synthesize_speech, transcribe_audio
+from caddy_engine import (
+    caddy_reply, classify_photo_subject, extract_scorecard_from_image,
+    synthesize_speech, transcribe_audio,
+)
 from caddy_round import (
     build_course_from_synthetic, find_synthetic_course, find_tee,
     format_course_context, format_score_context, get_course,
@@ -119,7 +122,9 @@ async def caddy_photo(
     lng: Optional[float] = None,
     user: dict = Depends(get_current_user),
 ):
-    """Scorecard photo → Claude vision extraction → course load + caddy reply."""
+    """Photo → Haiku classifies it → scorecard photos load the course, scene
+    photos (the player's lie / shot situation) go through the chat pipeline
+    with the image attached so Caddy folds what it sees into the advice."""
     content_type = image.content_type or "image/jpeg"
     print(f"[photo] user={user['username']} filename={image.filename!r} content_type={content_type!r}")
     if not content_type.startswith("image/"):
@@ -129,11 +134,28 @@ async def caddy_photo(
     if len(image_bytes) > 10 * 1024 * 1024:
         raise HTTPException(400, "Image too large (max 10MB)")
 
+    photo_kind = classify_photo_subject(image_bytes, content_type)
+    print(f"[photo] classified as: {photo_kind}")
+    if photo_kind == "scene":
+        return process_user_message(
+            user, message or "", lat=lat, lng=lng,
+            image_bytes=image_bytes, image_media_type=content_type,
+        )
+
     extracted = extract_scorecard_from_image(image_bytes, content_type)
 
-    # Not a recognizable scorecard — return a direct error, don't pollute conversation history
+    # Classified as a scorecard but unreadable. Mid-round (course already
+    # loaded) that usually means the classifier was wrong about a shot photo —
+    # fall through to the scene pipeline and let Caddy say what it sees. With
+    # no course loaded, the player is probably genuinely trying to load a
+    # scorecard, so give retake guidance instead.
     if not extracted:
         round_state = load_round_state(user["id"])
+        if round_state.get("course"):
+            return process_user_message(
+                user, message or "", lat=lat, lng=lng,
+                image_bytes=image_bytes, image_media_type=content_type,
+            )
         return {
             "reply": "Couldn't read a scorecard from that photo. Try laying the card flat with even lighting and shoot straight down, or just tell me the course name and I'll look it up.",
             "user_message": message or "📷 Photo",

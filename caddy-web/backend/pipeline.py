@@ -10,7 +10,9 @@ import json
 import threading
 from typing import Optional
 
-from caddy_engine import anthropic_client, build_system_prompt, caddy_reply
+from caddy_engine import (
+    SCENE_PHOTO_INSTRUCTIONS, anthropic_client, build_system_prompt, caddy_reply,
+)
 from caddy_round import (
     apply_score_to_round_state, calculate_handicap, compute_round_status,
     detect_and_load_course, detect_and_log_score, detect_and_update_tee,
@@ -30,7 +32,9 @@ from store import (
 
 def process_user_message(user: dict, message: str,
                          lat: Optional[float] = None,
-                         lng: Optional[float] = None) -> dict:
+                         lng: Optional[float] = None,
+                         image_bytes: Optional[bytes] = None,
+                         image_media_type: str = "image/jpeg") -> dict:
     """The full message processing pipeline:
     - Detect course mention → load it
     - Detect score report → log it
@@ -38,7 +42,8 @@ def process_user_message(user: dict, message: str,
     - Detect end-of-round → trigger save
     - Fetch live weather (if location provided)
     - Build dynamic system context (player + course + score + weather + wind + yardage)
-    - Get Claude reply
+    - Get Claude reply (multimodal when image_bytes is set — a photo of the
+      player's shot situation gets attached to the turn with lie-reading rules)
     - Save state
     Returns dict with reply, round_state, weather, alerts, and any events that fired.
     """
@@ -293,18 +298,33 @@ def process_user_message(user: dict, message: str,
             f"\nRESPONSE RULES (follow strictly):\n{rules_str}"
         )
 
-    # 6. Get Claude's reply
-    reply = caddy_reply(user, history, message, round_context=round_context)
+    # 6. Get Claude's reply. For shot photos, the Claude turn carries the image
+    # plus lie-reading instructions, but the persisted history stores a clean
+    # text label — images don't belong in conversation_history.
+    if image_bytes:
+        photo_note = (
+            f'\nThe player said with the photo: "{message}"'
+            if message else "\n(The player sent the photo without a message.)"
+        )
+        reply = caddy_reply(
+            user, history, SCENE_PHOTO_INSTRUCTIONS + photo_note,
+            round_context=round_context,
+            image_bytes=image_bytes, image_media_type=image_media_type,
+        )
+        display_message = message or "📷 Shot photo"
+    else:
+        reply = caddy_reply(user, history, message, round_context=round_context)
+        display_message = message
 
     # 7. Save state
-    history.append({"role": "user", "content": message})
+    history.append({"role": "user", "content": display_message})
     history.append({"role": "assistant", "content": reply})
     save_conversation(user["id"], history)
     save_round_state(user["id"], round_state)
 
     return {
         "reply": reply,
-        "user_message": message,
+        "user_message": display_message,
         "round_state": round_state,
         "weather": weather,
         "events": events,

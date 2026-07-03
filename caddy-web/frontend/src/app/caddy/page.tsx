@@ -309,7 +309,7 @@ export default function CaddyPage() {
     const preview = photoPreview;
     clearPhoto();
     setInput("");
-    setMessages((m) => [...m, { role: "user", content: text || "📷 Scorecard" }]);
+    setMessages((m) => [...m, { role: "user", content: text || "📷 Photo" }]);
     setSending(true);
     setError(null);
     try {
@@ -513,7 +513,7 @@ export default function CaddyPage() {
                   ✕
                 </button>
               </div>
-              <span className="text-[12px] text-muted">Scorecard photo — add a note or tap send</span>
+              <span className="text-[12px] text-muted">Photo — scorecard or your lie. Add a note or tap send</span>
             </div>
           )}
           <form onSubmit={photoFile ? (e) => { e.preventDefault(); handleSendPhoto(); } : handleSendText} className="flex items-end gap-2">
@@ -546,8 +546,8 @@ export default function CaddyPage() {
               onClick={() => fileInputRef.current?.click()}
               disabled={sending || transcribing}
               className="flex-shrink-0 w-9 h-9 mb-1.5 rounded-full text-muted hover:text-forest hover:bg-cream/60 flex items-center justify-center transition disabled:opacity-40"
-              title="Upload scorecard photo"
-              aria-label="Upload scorecard"
+              title="Snap a photo — scorecard to load the course, or your ball's lie for advice"
+              aria-label="Upload photo"
             >
               <CameraIcon />
             </button>
