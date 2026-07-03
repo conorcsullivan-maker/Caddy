@@ -1,0 +1,47 @@
+{
+  "expo": {
+    "name": "Caddy",
+    "slug": "caddy",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "backgroundColor": "#F5F1E8",
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "app.caddy.mobile",
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "Caddy uses your location on the course for distances to the green, wind direction relative to your shot, and automatic shot tracking.",
+        "NSCameraUsageDescription": "Caddy uses the camera to read scorecards and look at your ball's lie.",
+        "NSPhotoLibraryUsageDescription": "Caddy can read scorecards and lies from photos in your library."
+      }
+    },
+    "android": {
+      "package": "app.caddy.mobile",
+      "adaptiveIcon": {
+        "backgroundColor": "#0E3A2E",
+        "foregroundImage": "./assets/icon.png"
+      },
+      "permissions": ["ACCESS_COARSE_LOCATION", "ACCESS_FINE_LOCATION", "CAMERA"],
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      "expo-secure-store",
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Caddy uses your location on the course for distances, wind, and automatic shot tracking."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "cameraPermission": "Caddy uses the camera to read scorecards and look at your ball's lie."
+        }
+      ]
+    ]
+  }
+}
