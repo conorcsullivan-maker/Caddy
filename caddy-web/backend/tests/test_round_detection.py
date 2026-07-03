@@ -7,6 +7,8 @@ positives) — every case here locks one of those in.
 """
 import pytest
 
+from datetime import datetime, timedelta, timezone
+
 from caddy_round import (
     _extract_hole_number,
     apply_score_to_round_state,
@@ -14,7 +16,10 @@ from caddy_round import (
     compute_round_status,
     detect_and_log_score,
     detect_approach_shot,
+    detect_gps_shot,
     detect_remaining_yardage,
+    extract_club_mention,
+    extract_miss_direction,
     find_tee,
     infer_drive_distance,
     is_end_of_round,
@@ -289,6 +294,76 @@ class TestApproachShotDetection:
         # ...but a real "took N" score still logs
         round_state["current_hole"] = 1
         assert detect_and_log_score("took 6 there", round_state)["score"] == 6
+
+
+# ────────────────────────────────────────────────────────────
+# GPS-diff shot detection (rung 2 of automatic tracking)
+# ────────────────────────────────────────────────────────────
+def _fix(lat=42.0, lng=-71.0, hole=7, age_seconds=120):
+    ts = datetime.now(timezone.utc) - timedelta(seconds=age_seconds)
+    return {"lat": lat, "lng": lng, "hole": hole, "ts": ts.isoformat()}
+
+
+class TestGpsShotDetection:
+    # ~1 degree latitude = 111.2 km; 150 yd ≈ 137 m ≈ 0.001234°
+    LAT_150YD = 42.0 + 150 / 1.0936 / 111_200
+
+    def test_plausible_move_same_hole(self):
+        r = detect_gps_shot(_fix(), self.LAT_150YD, -71.0, current_hole=7)
+        assert r is not None
+        assert abs(r["distance"] - 150) <= 2
+
+    def test_different_hole_rejected(self):
+        assert detect_gps_shot(_fix(hole=6), self.LAT_150YD, -71.0, current_hole=7) is None
+
+    def test_jitter_sized_move_rejected(self):
+        near = 42.0 + 15 / 1.0936 / 111_200  # ~15 yd
+        assert detect_gps_shot(_fix(), near, -71.0, current_hole=7) is None
+
+    def test_cart_ride_sized_move_rejected(self):
+        far = 42.0 + 500 / 1.0936 / 111_200  # ~500 yd
+        assert detect_gps_shot(_fix(), far, -71.0, current_hole=7) is None
+
+    def test_stale_fix_rejected(self):
+        old = _fix(age_seconds=45 * 60)  # 45 minutes
+        assert detect_gps_shot(old, self.LAT_150YD, -71.0, current_hole=7) is None
+
+    def test_missing_inputs(self):
+        assert detect_gps_shot(None, self.LAT_150YD, -71.0, 7) is None
+        assert detect_gps_shot(_fix(), None, None, 7) is None
+        assert detect_gps_shot({"lat": 42.0, "lng": -71.0, "hole": 7}, self.LAT_150YD, -71.0, 7) is None  # no ts
+
+
+class TestClubMention:
+    def test_standard_clubs(self):
+        assert extract_club_mention("the 7 iron") == "7-iron"
+        assert extract_club_mention("hit sand wedge") == "Sand wedge"
+        assert extract_club_mention("that was the 3 wood") == "3-wood"
+
+    def test_bare_number_short_answer(self):
+        assert extract_club_mention("the 7") == "7-iron"
+        assert extract_club_mention("7") == "7-iron"
+
+    def test_bare_number_needs_short_message(self):
+        # Long messages with a bare digit are not club answers
+        assert extract_club_mention("I think the wind is coming off the water on 7") is None
+
+    def test_yardage_numbers_not_clubs(self):
+        assert extract_club_mention("150 out") is None
+
+    def test_question_about_next_shot_rejected(self):
+        assert extract_club_mention("should I hit 9 iron now?") is None
+
+    def test_no_club(self):
+        assert extract_club_mention("on the green") is None
+
+
+class TestMissDirection:
+    def test_directions(self):
+        assert extract_miss_direction("pulled it a bit") == "left"
+        assert extract_miss_direction("blocked it out") == "right"
+        assert extract_miss_direction("stuck it pin high") == "center"
+        assert extract_miss_direction("that'll do") is None
 
 
 # ────────────────────────────────────────────────────────────

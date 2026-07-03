@@ -32,7 +32,7 @@ export type ChatEvent =
       wind_from_compass: string;
     }
   | { type: "gps_yardage"; hole: number; yards_to_green: number }
-  | { type: "shot_logged"; club: string; distance: number; direction?: "left" | "right" | "center" | null };
+  | { type: "shot_logged"; club: string; distance: number; direction?: "left" | "right" | "center" | null; source?: "gps" };
 
 export type RelativeWind = {
   description: string;

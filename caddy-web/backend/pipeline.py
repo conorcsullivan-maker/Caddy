@@ -16,7 +16,8 @@ from caddy_engine import (
 from caddy_round import (
     apply_score_to_round_state, calculate_handicap, compute_round_status,
     detect_and_load_course, detect_and_log_score, detect_and_update_tee,
-    detect_approach_shot, detect_course_note, format_course_context,
+    detect_approach_shot, detect_course_note, detect_gps_shot,
+    extract_club_mention, extract_miss_direction, format_course_context,
     format_score_context, infer_drive_distance, is_end_of_round, save_hole_note,
 )
 from caddy_weather import fetch_weather, format_weather_context, has_critical_alert
@@ -107,6 +108,10 @@ def process_user_message(user: dict, message: str,
             round_state["started_at"] = round_state.get("started_at") or now_iso()
         course_loaded_now = True
         course_load_distance = course_load.get("distance_miles")
+        # A fresh course means any GPS fix / pending shot belongs to somewhere
+        # else — drop them so cross-course moves never read as shots.
+        round_state.pop("last_fix", None)
+        round_state.pop("pending_shot", None)
         # Kick off OSM geometry fetch in the background so auto-wind is
         # available from the second message onward (Overpass is too slow
         # to block this reply).
@@ -119,6 +124,10 @@ def process_user_message(user: dict, message: str,
     elif course_load and course_load.get("status") == "not_found":
         course_not_found_query = course_load.get("query")
         events.append({"type": "course_not_found", "query": course_not_found_query})
+
+    # Snapshot the hole BEFORE score detection can advance it — the GPS move
+    # since the last message happened on the hole the player WAS on.
+    hole_at_message_start = round_state.get("current_hole") or 1
 
     # 2b. Tee change detection (course already loaded, player mentions a different tee color)
     new_tee = detect_and_update_tee(message, round_state)
@@ -166,7 +175,61 @@ def process_user_message(user: dict, message: str,
             print(f"[on-course] approach log failed: {e}")
             approach_shot = None
 
-    # 4c. Passive course note extraction (silent — player never sees this).
+    # 4c. GPS-diff shot tracking (rung 2 of the automatic-tracking ladder).
+    # The distance between where the player sent their last message and this
+    # one — on the same hole — is the shot they just hit. If a pending shot
+    # from the previous message is waiting on a club, resolve it now; if this
+    # message's movement looks like a new shot, log it immediately when the
+    # club is named, otherwise ask Caddy to confirm.
+    prev_fix = round_state.get("last_fix")
+    pending_shot = round_state.pop("pending_shot", None)  # one-message TTL
+    gps_logged: Optional[dict] = None
+    gps_ask_note = ""
+
+    if pending_shot and not approach_shot:
+        club = extract_club_mention(message)
+        if club:
+            direction = extract_miss_direction(message)
+            try:
+                record_on_course_shot(user["id"], club, pending_shot["distance"], direction)
+                gps_logged = {"club": club, "distance": pending_shot["distance"],
+                              "direction": direction}
+                events.append({"type": "shot_logged", "source": "gps", **gps_logged})
+            except Exception as e:
+                print(f"[on-course] gps shot log failed: {e}")
+
+    gps_move = detect_gps_shot(prev_fix, lat, lng, hole_at_message_start)
+    if (gps_move and not score_just_logged and not approach_shot
+            and not drive_result and not gps_logged):
+        club = extract_club_mention(message)
+        if club:
+            direction = extract_miss_direction(message)
+            try:
+                record_on_course_shot(user["id"], club, gps_move["distance"], direction)
+                gps_logged = {"club": club, "distance": gps_move["distance"],
+                              "direction": direction}
+                events.append({"type": "shot_logged", "source": "gps", **gps_logged})
+            except Exception as e:
+                print(f"[on-course] gps shot log failed: {e}")
+        else:
+            round_state["pending_shot"] = {
+                "distance": gps_move["distance"],
+                "hole": hole_at_message_start,
+                "ts": now_iso(),
+            }
+            gps_ask_note = (
+                f"\n\n=== SHOT DETECTED (GPS) ===\n"
+                f"The player moved ~{gps_move['distance']} yards down hole "
+                f"{hole_at_message_start} since their last message — almost certainly "
+                f"the shot they just hit. You don't know the club yet. At the END of "
+                f"your reply, ask in ONE casual phrase what they hit (e.g. \"What'd "
+                f"you hit there?\"). If you recommended a club for that shot earlier, "
+                f"reference it (\"the 8-iron do the job?\"). If their message makes "
+                f"clear they haven't hit yet (walking ahead, moving to a drop, riding "
+                f"to a partner's ball), skip the question entirely.\n"
+            )
+
+    # 4d. Passive course note extraction (silent — player never sees this).
     # Runs in a background thread: the note only benefits FUTURE course loads,
     # so there's no reason to hold this reply hostage to a Haiku call. Snapshot
     # the state it needs — the request thread keeps mutating round_state.
@@ -214,6 +277,15 @@ def process_user_message(user: dict, message: str,
             f"on-course stats. You may acknowledge in a few words (e.g. 'logged that "
             f"{approach_shot['club']}') but keep the focus on what the player actually said."
         )
+    if gps_logged:
+        _miss = f" (miss: {gps_logged['direction']})" if gps_logged.get("direction") else ""
+        round_context += (
+            f"\n\nSHOT LOGGED (automatic, GPS-measured): {gps_logged['club']} — "
+            f"{gps_logged['distance']} yards{_miss} — just saved to the player's stats. "
+            f"Acknowledge in a few words (e.g. 'logged it — {gps_logged['distance']} with the "
+            f"{gps_logged['club']}') and move on to whatever they actually asked."
+        )
+    round_context += gps_ask_note
 
     # Course context handling — never block on confirmation. Three cases:
     if course_loaded_now:
@@ -339,6 +411,19 @@ def process_user_message(user: dict, message: str,
     else:
         reply = caddy_reply(user, history, message, round_context=round_context)
         display_message = message
+
+    # Update the GPS fix for the next message's shot-diffing. A just-logged
+    # score means the player is wrapping the hole (standing near the green,
+    # about to walk to the next tee) — drop the fix so the green→tee walk can
+    # never read as a shot; their next message establishes a fresh fix.
+    if score_just_logged:
+        round_state.pop("last_fix", None)
+    elif lat is not None and lng is not None and round_state.get("course"):
+        round_state["last_fix"] = {
+            "lat": lat, "lng": lng,
+            "hole": round_state.get("current_hole") or 1,
+            "ts": now_iso(),
+        }
 
     # 7. Save state
     history.append({"role": "user", "content": display_message})

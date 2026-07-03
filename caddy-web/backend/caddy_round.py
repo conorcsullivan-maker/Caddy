@@ -9,6 +9,7 @@ import json
 import math
 import os
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -500,15 +501,76 @@ def detect_approach_shot(text: str) -> Optional[dict]:
     if distance is None or not (30 <= distance <= 330):
         return None
 
-    direction = None
-    if _MISS_LEFT_RE.search(text_lower):
-        direction = "left"
-    elif _MISS_RIGHT_RE.search(text_lower):
-        direction = "right"
-    elif _ON_TARGET_RE.search(text_lower):
-        direction = "center"
+    return {"club": club, "distance": distance,
+            "direction": extract_miss_direction(text_lower)}
 
-    return {"club": club, "distance": distance, "direction": direction}
+
+def extract_miss_direction(text: str) -> Optional[str]:
+    """Miss-direction cue in a shot description: 'left', 'right', 'center',
+    or None when nothing directional was said."""
+    text_lower = text.lower()
+    if _MISS_LEFT_RE.search(text_lower):
+        return "left"
+    if _MISS_RIGHT_RE.search(text_lower):
+        return "right"
+    if _ON_TARGET_RE.search(text_lower):
+        return "center"
+    return None
+
+
+def extract_club_mention(text: str) -> Optional[str]:
+    """A bare club mention — used to resolve a GPS-detected pending shot,
+    where Caddy has just ASKED what the player hit, so no shot verb is
+    required ("the 7 iron", "sand wedge", even just "7"). Interrogatives are
+    still rejected: "should I hit 9 iron now?" is about the NEXT shot."""
+    text_lower = text.lower()
+    if _NOT_A_REPORT_RE.search(text_lower):
+        return None
+    for pattern, label in _CLUB_PATTERNS:
+        m = pattern.search(text_lower)
+        if m:
+            if "{n}" in label:
+                n = m.group(1)
+                return label.format(n=_CLUB_WORD_NUMS.get(n, n))
+            return label
+    # A short answer that's just a number ("7", "yeah the 7") means the iron —
+    # only trusted on short messages so "150 to the pin on 7" can't match.
+    if len(text_lower.split()) <= 4:
+        m = re.search(rf"(?:\bthe\s+|\bmy\s+|^|\s)({_CLUB_NUM})\b", text_lower)
+        if m and not re.search(r"\d{2,}", text_lower):
+            n = m.group(1)
+            return f"{_CLUB_WORD_NUMS.get(n, n)}-iron"
+    return None
+
+
+# GPS-diff shot detection: the distance between where the player sent their
+# last message and where they sent this one — on the same hole — is the shot
+# they just hit. Same trick Arccos/Shot Scope use, no optics required.
+GPS_SHOT_MIN_YDS = 30    # below this, GPS jitter and short walks dominate
+GPS_SHOT_MAX_YDS = 350   # above this, they skipped a message or drove the cart
+GPS_FIX_MAX_AGE_MIN = 30 # stale fixes (lunch stop, long gap) don't count
+
+
+def detect_gps_shot(last_fix: Optional[dict], lat: Optional[float],
+                    lng: Optional[float], current_hole: int) -> Optional[dict]:
+    """Compare the player's current GPS position against the fix stored with
+    their previous message. A plausible move down the same hole returns
+    {"distance": yards}; anything else returns None."""
+    if not last_fix or lat is None or lng is None:
+        return None
+    if last_fix.get("hole") != current_hole:
+        return None
+    try:
+        fix_dt = datetime.fromisoformat(str(last_fix.get("ts")).replace("Z", "+00:00"))
+        if (datetime.now(timezone.utc) - fix_dt).total_seconds() > GPS_FIX_MAX_AGE_MIN * 60:
+            return None
+    except (ValueError, TypeError):
+        return None
+    from caddy_geo import haversine_m
+    dist_yd = haversine_m((last_fix["lat"], last_fix["lng"]), (lat, lng)) * 1.0936
+    if not (GPS_SHOT_MIN_YDS <= dist_yd <= GPS_SHOT_MAX_YDS):
+        return None
+    return {"distance": int(round(dist_yd))}
 
 
 def might_mention_course(text: str, course_loaded: bool) -> bool:
