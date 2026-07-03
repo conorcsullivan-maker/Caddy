@@ -133,6 +133,10 @@ Events (`round_state`, `weather`, `events: ChatEvent[]`) are returned to the fro
 
 ## Recent significant changes (chronological, most recent first)
 
+**Lie reading (photo → advice)** *(2026-07-03)* — the photo endpoint classifies each image with a Haiku vision call (`classify_photo_subject`): scorecards keep the extraction flow, on-course scene photos flow through `process_user_message` with the image attached to the Opus turn plus `SCENE_PHOTO_INSTRUCTIONS` (lie/slope/trouble assessment; never estimates yardage from a photo). This is the interpretation layer for the future wearable-camera work. Verified end-to-end locally.
+
+**Backend refactor** *(2026-07-02/03)* — main.py split into `db.py` / `security.py` / `store.py` / `deps.py` / `pipeline.py` / `routers/{auth,profile,chat,admin}.py`. Sessions now expire server-side (30d); PINs upgraded to salted PBKDF2 transparently on login; shot_stats writes are single-transaction (BEGIN IMMEDIATE); active-conversation download route ordering fixed.
+
 **Test suite** *(2026-07-02, commit `f820281`)* — 94 pytest cases in `caddy-web/backend/tests/` covering the detection layer (score parsing, hole extraction, negations), wind math conventions, GPS yardage, and prompt helpers. Anthropic client stubbed to raise — tests never touch the network. Run: `cd caddy-web/backend && ./venv/bin/python -m pytest tests/`. **Run these before touching caddy_round.py, caddy_geo.py, or caddy_engine.py helpers.**
 
 **PWA icons** *(2026-07-02, commit `779d2b6`)* — icon-192/512 + maskable in manifest, Next file-convention `src/app/icon.png` + `apple-icon.png`.
@@ -165,12 +169,11 @@ Events (`round_state`, `weather`, `events: ChatEvent[]`) are returned to the fro
 
 ---
 
-## Current priorities (as of 2026-07-02, post-refactor)
+## Current priorities (as of 2026-07-03)
 
-1. **Validate auto-wind + auto-yardage on a live round** (Drew's next round). Render was suspended (billing, June lapse) — Conor resumed it 2026-07-02; backend is live again.
-2. **Phone-camera lie-reading prototype** — extend the existing Claude vision path ("photo of your lie" → lie/trouble assessment folded into club advice). Groundwork for the wearable vision; no hardware needed.
-3. **Approach-shot logging beyond driver** — parse "hit 7-iron from 145" out of player messages and log to `shot_stats[club].course`.
+1. **Validate on a live round** (Drew's next): auto-wind, auto-yardage, and lie-reading photos.
+2. **Approach-shot logging beyond driver** — parse "hit 7-iron from 145" out of player messages and log to `shot_stats[club].course`.
+3. **React Native (Expo) iPhone app** — the API contract is now stable post-refactor; generate a typed client from FastAPI's OpenAPI schema first.
 4. **Trackman session deletion UI** (dedup column exists, no DELETE endpoint).
-5. **React Native (Expo) iPhone app** — the API contract is now stable post-refactor; consider generating a typed client from FastAPI's OpenAPI schema first.
 
 Decided: iPhone app will be **React Native (Expo)**. Wearable (glasses) integration deliberately deferred until the RN app exists and lie-reading proves out. Long-term: terrain via USGS 3DEP, paired-play mode, Postgres at ~50 concurrent users.
