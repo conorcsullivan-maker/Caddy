@@ -401,6 +401,116 @@ _COURSE_HINT_STRONG = [
 _PROPER_NOUN_PAIR_RE = re.compile(r"\b[A-Z][a-z]+\s+[A-Z][a-z]+")
 
 
+# ────────────────────────────────────────────────────────────
+# Approach-shot detection — "hit 7-iron from 145" → shot_stats
+#
+# Regex-only (no LLM call — this runs on every message). Only fires on
+# reports of COMPLETED shots: it requires a shot verb and rejects
+# questions/intent ("should I hit 7 iron from 150?" is asking for advice,
+# not reporting a shot). The distance is the yardage the shot was played
+# from — the standard proxy for carry on approach shots.
+# ────────────────────────────────────────────────────────────
+
+_CLUB_WORD_NUMS = {"two": "2", "three": "3", "four": "4", "five": "5",
+                   "six": "6", "seven": "7", "eight": "8", "nine": "9"}
+_CLUB_NUM = r"(?:[2-9]|two|three|four|five|six|seven|eight|nine)"
+
+# Ordered: most specific first. Group 1 (when present) is the club number.
+# Labels must match CLUB_LABEL_MAP in caddy_trackman so on-course shots land
+# in the same shot_stats buckets as Trackman data.
+_CLUB_PATTERNS = [
+    (re.compile(rf"\b({_CLUB_NUM})[\s-]?iron\b"), "{n}-iron"),
+    (re.compile(rf"\b({_CLUB_NUM})[\s-]?wood\b"), "{n}-wood"),
+    (re.compile(rf"\b({_CLUB_NUM})[\s-]?hybrid\b"), "{n}-hybrid"),
+    (re.compile(r"\bpitching[\s-]?wedge\b"), "Pitching wedge"),
+    (re.compile(r"\bgap[\s-]?wedge\b"), "Gap wedge"),
+    (re.compile(r"\bsand[\s-]?wedge\b"), "Sand wedge"),
+    (re.compile(r"\blob[\s-]?wedge\b"), "Lob wedge"),
+    (re.compile(r"\bdriver\b"), "Driver"),
+    (re.compile(r"\bhybrid\b"), "Hybrid"),
+]
+
+# A completed shot needs a shot verb...
+_SHOT_VERB_RE = re.compile(
+    r"\b(hit|went with|took|used|flushed|smoked|striped|stuck|stiffed|pured|"
+    r"pulled|pushed|blocked|yanked|hooked|sliced|chunked|thinned|bladed|fatted)\b"
+)
+# ...and must not be a question or a statement of intent.
+_NOT_A_REPORT_RE = re.compile(
+    r"\?|\b(should|what|which|would|could|do i|can i|thinking|maybe|"
+    r"gonna|going to|about to|planning|want to|or the)\b"
+)
+
+# Miss-direction cues. Deliberately narrow — a bare "left" usually means
+# yards REMAINING ("150 left"), never a miss direction.
+_MISS_LEFT_RE = re.compile(r"\b(pulled|hooked|yanked|tugged|missed (?:it )?left|long left|short left)\b")
+_MISS_RIGHT_RE = re.compile(r"\b(pushed|blocked|sliced|missed (?:it )?right|long right|short right)\b")
+_ON_TARGET_RE = re.compile(
+    r"\b(stuck|stiffed|flushed|pured|striped|pin high|on the green|"
+    r"middle of the green|center of the green|to (?:a foot|\d+ feet))\b"
+)
+
+
+def detect_approach_shot(text: str) -> Optional[dict]:
+    """Detect an explicit report of a shot with a named club and yardage.
+    Returns {"club", "distance", "direction"} with the club normalized to the
+    Trackman stats label, or None. Distance must be 30–330 yards."""
+    text_lower = text.lower()
+    if _NOT_A_REPORT_RE.search(text_lower):
+        return None
+    if not _SHOT_VERB_RE.search(text_lower):
+        return None
+
+    club = None
+    club_end = 0
+    for pattern, label in _CLUB_PATTERNS:
+        m = pattern.search(text_lower)
+        if m:
+            if "{n}" in label:
+                n = m.group(1)
+                club = label.format(n=_CLUB_WORD_NUMS.get(n, n))
+            else:
+                club = label
+            club_end = m.end()
+            break
+    # Colloquial bare-number club ("hit a 7 from 155") — only trusted when the
+    # unambiguous "from <yards>" form is present.
+    if club is None:
+        m = re.search(rf"\b(?:hit|flushed|pured)\s+(?:an?\s+|my\s+|the\s+)?({_CLUB_NUM})\s+from\s+\d", text_lower)
+        if m:
+            n = m.group(1)
+            club = f"{_CLUB_WORD_NUMS.get(n, n)}-iron"
+            club_end = m.end(1)
+    if club is None:
+        return None
+
+    # Preferred distance form: "from 150" / "from about 150"
+    distance = None
+    m = re.search(r"\bfrom\s+(?:about\s+|like\s+|maybe\s+)?(\d{2,3})\b", text_lower)
+    if m:
+        distance = int(m.group(1))
+    else:
+        # "hit 8 iron 140" — a bare number shortly after the club, as long as
+        # it isn't a remaining-yardage phrase ("driver, 150 left").
+        m = re.compile(
+            r"[^0-9]{0,20}?\b(\d{2,3})\b(?!\s*(?:left|to go|remaining|out|to the))"
+        ).match(text_lower, club_end)
+        if m:
+            distance = int(m.group(1))
+    if distance is None or not (30 <= distance <= 330):
+        return None
+
+    direction = None
+    if _MISS_LEFT_RE.search(text_lower):
+        direction = "left"
+    elif _MISS_RIGHT_RE.search(text_lower):
+        direction = "right"
+    elif _ON_TARGET_RE.search(text_lower):
+        direction = "center"
+
+    return {"club": club, "distance": distance, "direction": direction}
+
+
 def might_mention_course(text: str, course_loaded: bool) -> bool:
     """Cheap pre-filter that decides whether a message could plausibly contain
     a course name, so detect_and_load_course doesn't burn a Haiku call (and
@@ -733,9 +843,12 @@ def detect_and_log_score(text: str, round_state: dict) -> Optional[dict]:
     )
     # "shot 5" / "made 4" / "had an eight" — score verb directly followed by
     # a number ("an?" covers both "a five" and "an eight").
+    # The club-word lookahead keeps "took 6 iron from 180" from reading as a
+    # score of 6 — that's a shot report, not a score (see detect_approach_shot).
     matches_verb_number = bool(re.search(
         r"\b(shot|made|carded|took|posted|scored|had)\s+(an?\s+)?"
-        r"(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b",
+        r"(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b"
+        r"(?![\s-]*(?:iron|wood|hybrid|wedge))",
         text_lower,
     ))
 
@@ -819,6 +932,7 @@ def detect_and_log_score(text: str, round_state: dict) -> Optional[dict]:
     abs_pattern = re.compile(
         r"\b(?:got|shot|made|took|carded|posted|had|scored|went)\s+(?:an?\s+)?"
         r"(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen)\b"
+        r"(?![\s-]*(?:iron|wood|hybrid|wedge))"  # "took 6 iron" is a club, not a score
     )
     _NUM_WORDS = {
         "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,

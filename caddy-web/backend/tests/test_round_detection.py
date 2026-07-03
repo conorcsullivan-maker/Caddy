@@ -13,6 +13,7 @@ from caddy_round import (
     calculate_handicap,
     compute_round_status,
     detect_and_log_score,
+    detect_approach_shot,
     detect_remaining_yardage,
     find_tee,
     infer_drive_distance,
@@ -209,6 +210,85 @@ class TestDriveInference:
 
     def test_no_course_no_inference(self):
         assert infer_drive_distance("150 to the pin", {"current_hole": 1}) is None
+
+
+# ────────────────────────────────────────────────────────────
+# Approach-shot detection ("hit 7-iron from 145" → shot_stats)
+# ────────────────────────────────────────────────────────────
+class TestApproachShotDetection:
+    def test_basic_from_form(self):
+        r = detect_approach_shot("hit 7 iron from 150")
+        assert r == {"club": "7-iron", "distance": 150, "direction": None}
+
+    def test_word_number_and_about(self):
+        r = detect_approach_shot("just hit my seven iron from about 155")
+        assert r["club"] == "7-iron"
+        assert r["distance"] == 155
+
+    def test_hyphenated_club(self):
+        assert detect_approach_shot("hit 4-iron from 200")["club"] == "4-iron"
+
+    def test_wedges_use_trackman_labels(self):
+        assert detect_approach_shot("hit pitching wedge from 110")["club"] == "Pitching wedge"
+        assert detect_approach_shot("hit sand wedge from 80")["club"] == "Sand wedge"
+
+    def test_woods_and_hybrids(self):
+        assert detect_approach_shot("hit 3 wood from 240")["club"] == "3-wood"
+        assert detect_approach_shot("hit a hybrid from 210")["club"] == "Hybrid"
+        assert detect_approach_shot("took 4 hybrid from 205")["club"] == "4-hybrid"
+
+    def test_bare_number_after_club(self):
+        # "hit 8 iron 140" — no "from" but the number follows the club
+        r = detect_approach_shot("hit 8 iron 140")
+        assert r == {"club": "8-iron", "distance": 140, "direction": None}
+
+    def test_colloquial_bare_number_club(self):
+        # "hit a 7 from 155" — number-only club, trusted because "from" is present
+        r = detect_approach_shot("hit a 7 from 155")
+        assert r["club"] == "7-iron"
+        assert r["distance"] == 155
+
+    def test_miss_left(self):
+        assert detect_approach_shot("pulled my 8 iron from 140")["direction"] == "left"
+        assert detect_approach_shot("hit 6 iron from 175, hooked it")["direction"] == "left"
+
+    def test_miss_right(self):
+        assert detect_approach_shot("blocked the 6 iron from 175")["direction"] == "right"
+
+    def test_on_target(self):
+        r = detect_approach_shot("flushed a 4 iron from 200, stuck it to 6 feet")
+        assert r["direction"] == "center"
+
+    def test_question_not_logged(self):
+        assert detect_approach_shot("should I hit 7 iron from 150?") is None
+        assert detect_approach_shot("7 iron or the 8 from 150") is None
+        assert detect_approach_shot("what do I hit from 150") is None
+
+    def test_intent_not_logged(self):
+        assert detect_approach_shot("I'm going to hit 7 iron from 150") is None
+        assert detect_approach_shot("thinking 8 iron from 160") is None
+
+    def test_no_verb_not_logged(self):
+        assert detect_approach_shot("7 iron from 150") is None
+
+    def test_remaining_yardage_is_not_a_shot_distance(self):
+        # "150 left" after driver = yards remaining, not a 150-yard drive
+        assert detect_approach_shot("hit driver, 150 left") is None
+
+    def test_out_of_range_distance(self):
+        assert detect_approach_shot("hit 7 iron from 20") is None
+        assert detect_approach_shot("hit driver from 400") is None
+
+    def test_ordinary_chat(self):
+        assert detect_approach_shot("what club should I hit here?") is None
+        assert detect_approach_shot("made par on 3") is None
+
+    def test_club_report_does_not_log_a_score(self, round_state):
+        # The score detector's "took N" pattern must not swallow "took 6 iron"
+        assert detect_and_log_score("took 6 iron from 180", round_state) is None
+        # ...but a real "took N" score still logs
+        round_state["current_hole"] = 1
+        assert detect_and_log_score("took 6 there", round_state)["score"] == 6
 
 
 # ────────────────────────────────────────────────────────────

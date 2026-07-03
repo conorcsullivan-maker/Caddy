@@ -16,8 +16,8 @@ from caddy_engine import (
 from caddy_round import (
     apply_score_to_round_state, calculate_handicap, compute_round_status,
     detect_and_load_course, detect_and_log_score, detect_and_update_tee,
-    detect_course_note, format_course_context, format_score_context,
-    infer_drive_distance, is_end_of_round, save_hole_note,
+    detect_approach_shot, detect_course_note, format_course_context,
+    format_score_context, infer_drive_distance, is_end_of_round, save_hole_note,
 )
 from caddy_weather import fetch_weather, format_weather_context, has_critical_alert
 from caddy_geo import format_gps_yardage_context, format_relative_wind_context
@@ -150,7 +150,23 @@ def process_user_message(user: dict, message: str,
         except Exception as e:
             print(f"[on-course] driver log failed: {e}")
 
-    # 4b. Passive course note extraction (silent — player never sees this).
+    # 4b. Explicit shot report ("hit 7-iron from 145") → shot_stats. This is
+    # what grows the confidence tiers for every club from on-course play, not
+    # just Trackman uploads and inferred drives. Skip Driver when drive
+    # inference already logged this message — no double counting.
+    approach_shot = detect_approach_shot(message)
+    if approach_shot and not (approach_shot["club"] == "Driver" and drive_result):
+        try:
+            record_on_course_shot(
+                user["id"], approach_shot["club"], approach_shot["distance"],
+                approach_shot.get("direction"),
+            )
+            events.append({"type": "shot_logged", **approach_shot})
+        except Exception as e:
+            print(f"[on-course] approach log failed: {e}")
+            approach_shot = None
+
+    # 4c. Passive course note extraction (silent — player never sees this).
     # Runs in a background thread: the note only benefits FUTURE course loads,
     # so there's no reason to hold this reply hostage to a Haiku call. Snapshot
     # the state it needs — the request thread keeps mutating round_state.
@@ -190,6 +206,14 @@ def process_user_message(user: dict, message: str,
         events.append({"type": "relative_wind", **relative_wind})
     if gps_yardage:
         events.append({"type": "gps_yardage", **gps_yardage})
+    if approach_shot:
+        _miss = f" (miss: {approach_shot['direction']})" if approach_shot.get("direction") else ""
+        round_context += (
+            f"\n\nSHOT LOGGED (automatic): {approach_shot['club']} from "
+            f"{approach_shot['distance']} yards{_miss} was just saved to the player's "
+            f"on-course stats. You may acknowledge in a few words (e.g. 'logged that "
+            f"{approach_shot['club']}') but keep the focus on what the player actually said."
+        )
 
     # Course context handling — never block on confirmation. Three cases:
     if course_loaded_now:
