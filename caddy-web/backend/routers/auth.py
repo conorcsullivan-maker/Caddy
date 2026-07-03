@@ -80,7 +80,10 @@ def login(payload: LoginRequest, response: Response):
         max_age=60 * 60 * 24 * SESSION_MAX_AGE_DAYS,
         secure=COOKIE_SECURE,
     )
-    return {"user": user}
+    # The token also rides in the body for the native app, which stores it in
+    # the keychain and authenticates with "Authorization: Bearer <token>"
+    # instead of cookies. The web client ignores this field.
+    return {"user": user, "token": token}
 
 
 @router.post("/api/logout")

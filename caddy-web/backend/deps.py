@@ -2,14 +2,23 @@
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import Cookie, Depends, HTTPException
+from fastapi import Cookie, Depends, Header, HTTPException
 
 from db import db
 from security import SESSION_MAX_AGE_DAYS
 from store import user_dict
 
 
-def get_current_user(session: Optional[str] = Cookie(None)) -> dict:
+def get_current_user(
+    session: Optional[str] = Cookie(None),
+    authorization: Optional[str] = Header(None),
+) -> dict:
+    # Two ways to present the same session token: the browser sends it as a
+    # first-party cookie (via the Vercel proxy); the native app stores it and
+    # sends "Authorization: Bearer <token>" straight to this API. Cookie wins
+    # when both are present.
+    if not session and authorization and authorization.lower().startswith("bearer "):
+        session = authorization[7:].strip()
     if not session:
         raise HTTPException(401, "Not signed in")
     with db() as conn:
