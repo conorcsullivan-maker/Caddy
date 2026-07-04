@@ -6,6 +6,10 @@ import {
 import * as Location from "expo-location";
 import * as ImagePicker from "expo-image-picker";
 import {
+  AudioPlayer, createAudioPlayer, RecordingPresets,
+  requestRecordingPermissionsAsync, setAudioModeAsync, useAudioRecorder,
+} from "expo-audio";
+import {
   api, ChatEvent, ChatResponse, Location as Loc, RoundState, User, WeatherSnapshot,
 } from "../api";
 import { clearToken } from "../auth";
@@ -21,8 +25,17 @@ export default function ChatScreen({ user, onLogout }: { user: User; onLogout: (
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [recording, setRecording] = useState(false);
+  const [muted, setMuted] = useState(false);
   const listRef = useRef<FlatList<Message>>(null);
   const hasLocationPermission = useRef(false);
+  const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
+  const playerRef = useRef<AudioPlayer | null>(null);
+  const mutedRef = useRef(false);
+  mutedRef.current = muted;
+
+  // Release any TTS player when the screen unmounts
+  useEffect(() => () => playerRef.current?.remove(), []);
 
   useEffect(() => {
     (async () => {
@@ -77,6 +90,56 @@ export default function ChatScreen({ user, onLogout }: { user: User; onLogout: (
       applyResponse(await api.caddy.message(text, await currentLocation()));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Send failed");
+    } finally {
+      setSending(false);
+    }
+  }
+
+  async function speak(text: string) {
+    if (mutedRef.current || !text) return;
+    try {
+      playerRef.current?.remove();
+      const player = createAudioPlayer(await api.caddy.speakSource(text));
+      playerRef.current = player;
+      player.play();
+    } catch {
+      // TTS is best-effort — the reply is already on screen
+    }
+  }
+
+  async function handleMic() {
+    if (sending) return;
+    if (!recording) {
+      const perm = await requestRecordingPermissionsAsync();
+      if (!perm.granted) {
+        setError("Microphone permission needed — enable it in Settings.");
+        return;
+      }
+      playerRef.current?.pause();
+      setError(null);
+      // allowsRecording must be on BEFORE preparing the recorder (iOS)
+      await setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true });
+      await recorder.prepareToRecordAsync();
+      recorder.record();
+      setRecording(true);
+      return;
+    }
+    // Stop → upload → transcript + spoken reply
+    setRecording(false);
+    setSending(true);
+    try {
+      await recorder.stop();
+      // Leave record mode before playback — iOS routes audio to the quiet
+      // earpiece while allowsRecording is on.
+      await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true });
+      const uri = recorder.uri;
+      if (!uri) throw new Error("Nothing recorded — try again");
+      const r = await api.caddy.voice(uri, await currentLocation());
+      if (r.transcript) setMessages((m) => [...m, { role: "user", content: r.transcript }]);
+      applyResponse(r);
+      speak(r.reply);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Voice failed");
     } finally {
       setSending(false);
     }
@@ -138,6 +201,9 @@ export default function ChatScreen({ user, onLogout }: { user: User; onLogout: (
       <View style={styles.header}>
         <Text style={styles.headerTitle}>CADDY</Text>
         <View style={styles.headerButtons}>
+          <TouchableOpacity onPress={() => setMuted((m) => !m)}>
+            <Text style={styles.headerAction}>{muted ? "🔇" : "🔊"}</Text>
+          </TouchableOpacity>
           <TouchableOpacity onPress={handleReset}>
             <Text style={styles.headerAction}>New</Text>
           </TouchableOpacity>
@@ -207,15 +273,22 @@ export default function ChatScreen({ user, onLogout }: { user: User; onLogout: (
           </TouchableOpacity>
           <TextInput
             style={styles.input}
-            placeholder="Talk to your caddy…"
-            placeholderTextColor={colors.muted}
+            placeholder={recording ? "Listening… tap ⏹ when done" : "Talk to your caddy…"}
+            placeholderTextColor={recording ? colors.error : colors.muted}
             value={input}
             onChangeText={setInput}
             onSubmitEditing={handleSend}
-            editable={!sending}
+            editable={!sending && !recording}
             multiline
           />
-          <TouchableOpacity style={styles.sendButton} onPress={handleSend} disabled={sending}>
+          <TouchableOpacity
+            style={[styles.micButton, recording && styles.micButtonActive]}
+            onPress={handleMic}
+            disabled={sending}
+          >
+            <Text style={styles.iconButtonText}>{recording ? "⏹" : "🎙️"}</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.sendButton} onPress={handleSend} disabled={sending || recording}>
             {sending ? (
               <ActivityIndicator color={colors.cream} size="small" />
             ) : (
@@ -314,6 +387,20 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   iconButtonText: { fontSize: 18 },
+  micButton: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: "#FFFFFF",
+    borderWidth: 1,
+    borderColor: "#E4DFD3",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  micButtonActive: {
+    backgroundColor: "#FDE8E8",
+    borderColor: colors.error,
+  },
   input: {
     flex: 1,
     minHeight: 42,

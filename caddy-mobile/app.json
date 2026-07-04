@@ -13,7 +13,8 @@
       "infoPlist": {
         "NSLocationWhenInUseUsageDescription": "Caddy uses your location on the course for distances to the green, wind direction relative to your shot, and automatic shot tracking.",
         "NSCameraUsageDescription": "Caddy uses the camera to read scorecards and look at your ball's lie.",
-        "NSPhotoLibraryUsageDescription": "Caddy can read scorecards and lies from photos in your library."
+        "NSPhotoLibraryUsageDescription": "Caddy can read scorecards and lies from photos in your library.",
+        "NSMicrophoneUsageDescription": "Caddy listens when you tap the mic so you can talk to your caddy hands-free on the course."
       }
     },
     "android": {
@@ -22,7 +23,12 @@
         "backgroundColor": "#0E3A2E",
         "foregroundImage": "./assets/icon.png"
       },
-      "permissions": ["ACCESS_COARSE_LOCATION", "ACCESS_FINE_LOCATION", "CAMERA"],
+      "permissions": [
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_FINE_LOCATION",
+        "CAMERA",
+        "RECORD_AUDIO"
+      ],
       "predictiveBackGestureEnabled": false
     },
     "web": {
@@ -40,6 +46,12 @@
         "expo-image-picker",
         {
           "cameraPermission": "Caddy uses the camera to read scorecards and look at your ball's lie."
+        }
+      ],
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "Caddy listens when you tap the mic so you can talk to your caddy hands-free on the course."
         }
       ]
     ]

@@ -126,6 +126,35 @@ export const api = {
         }),
       }),
 
+    voice: async (uri: string, location: Location): Promise<ChatResponse & { transcript: string }> => {
+      const token = await getToken();
+      const form = new FormData();
+      // expo-audio HIGH_QUALITY preset records .m4a — Whisper reads the
+      // format from the filename, so keep the extension honest.
+      form.append("audio", { uri, name: "speech.m4a", type: "audio/m4a" } as unknown as Blob);
+      const params = location ? `?lat=${location.lat}&lng=${location.lng}` : "";
+      const res = await fetch(`${API_BASE}/api/caddy/voice${params}`, {
+        method: "POST",
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+        body: form,
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.detail || `Voice failed (${res.status})`);
+      }
+      return res.json();
+    },
+
+    // AudioSource for expo-audio players: streams TTS straight from the API
+    // (GET /api/caddy/speak) with the bearer token in the request headers.
+    speakSource: async (text: string) => {
+      const token = await getToken();
+      return {
+        uri: `${API_BASE}/api/caddy/speak?message=${encodeURIComponent(text)}`,
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+      };
+    },
+
     photo: async (uri: string, message: string | undefined, location: Location): Promise<ChatResponse> => {
       const token = await getToken();
       const form = new FormData();

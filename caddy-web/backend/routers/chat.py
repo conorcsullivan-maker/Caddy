@@ -375,3 +375,12 @@ def caddy_speak(payload: CaddyMessageRequest, user: dict = Depends(get_current_u
     """Generate TTS audio for the given text (used for replaying responses)."""
     audio = synthesize_speech(payload.message)
     return FastAPIResponse(content=audio, media_type="audio/mpeg")
+
+
+@router.get("/api/caddy/speak")
+def caddy_speak_get(message: str, user: dict = Depends(get_current_user)):
+    """GET variant of TTS for native audio players that stream directly from
+    a URL with auth headers (expo-audio's AudioSource). Same output as the
+    POST route; the text rides in the query string."""
+    audio = synthesize_speech(message[:2000])
+    return FastAPIResponse(content=audio, media_type="audio/mpeg")
