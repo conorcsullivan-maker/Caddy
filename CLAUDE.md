@@ -137,6 +137,8 @@ Events (`round_state`, `weather`, `events: ChatEvent[]`) are returned to the fro
 
 ## Recent significant changes (chronological, most recent first)
 
+**Mobile voice** *(2026-07-04)* — expo-audio mic → `/api/caddy/voice` (m4a); TTS streams from new `GET /api/caddy/speak` via expo-audio AudioSource with bearer headers. Mute toggle, iOS audio-mode handling (allowsRecording on before prepare, off before playback) in `caddy-mobile/src/screens/ChatScreen.tsx`. Whisper verified live with a real m4a. Remaining mobile gaps: background location (dev build), profile screens, TestFlight.
+
 **Caddy Mobile v0.1** *(2026-07-03)* — Expo/RN app in `caddy-mobile/` (login, chat, GPS per message, round bar, weather, camera). Bearer-token auth added to the backend (`deps.py` accepts `Authorization: Bearer`, login returns `token` in body); mobile talks straight to Render, no proxy. Run: `cd caddy-mobile && npx expo start` → Expo Go. Next: voice, background location (dev build), profile screens.
 
 **GPS shot tracking (rung 2)** *(2026-07-03)* — `last_fix` + `pending_shot` in `active_round_state`; `detect_gps_shot` (caddy_round.py) turns same-hole movement between messages into a shot; Caddy asks for the club, `extract_club_mention` resolves bare answers ("the 7"). Guards: score log drops the fix, course load clears fix+pending, drive/approach detection suppress duplicates. Emits `shot_logged` with `source: "gps"`.
