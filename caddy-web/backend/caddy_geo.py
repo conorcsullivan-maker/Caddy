@@ -117,15 +117,103 @@ def _overpass(query: str, timeout: int = 60) -> Optional[dict]:
         return None
 
 
+# Bump when the parsing/selection logic changes in a way that should
+# invalidate cached geometry (store.py refetches anything older).
+GEOMETRY_VERSION = 2
+
+
+def _hole_ref(tags: dict) -> Optional[int]:
+    """Hole number from a golf=hole way. Prefers the `ref` tag; falls back to
+    a number in the name ("Hole 1") because some mappers only fill that in."""
+    ref = str(tags.get("ref") or "").strip()
+    if ref.isdigit() and 1 <= int(ref) <= 18:
+        return int(ref)
+    m = re.search(r"\b(\d{1,2})\b", str(tags.get("name") or ""))
+    if m and 1 <= int(m.group(1)) <= 18:
+        return int(m.group(1))
+    return None
+
+
+def select_course_holes(
+    candidates: list,
+    expected_pars: Optional[list] = None,
+) -> dict:
+    """Pick one hole polygon per hole number from a set that may contain
+    several courses' worth (36-hole clubs, neighbouring courses inside the
+    search radius). Returns {ref: candidate}.
+
+    Each candidate: {"ref": int, "par": int|None, "centroid": (lat, lng),
+                     "distance_to_course": m, ...}.
+
+    Two passes. First, anything unambiguous: a lone candidate for its
+    number, or the single one whose par matches the scorecard we loaded
+    from the course API. Second, the collisions (two par-4 7th holes): pick
+    the one nearest its already-resolved neighbours — hole N's polygon sits
+    beside hole N-1's and N+1's on the same course, and a few hundred yards
+    from the other course's. Falls back to distance from the course
+    coordinate only when nothing else can decide.
+    """
+    by_ref: dict = {}
+    for c in candidates:
+        by_ref.setdefault(c["ref"], []).append(c)
+
+    def expected(ref):
+        if expected_pars and 1 <= ref <= len(expected_pars):
+            return expected_pars[ref - 1]
+        return None
+
+    chosen: dict = {}
+    unresolved: dict = {}
+    for ref, cands in by_ref.items():
+        if len(cands) == 1:
+            chosen[ref] = cands[0]
+            continue
+        want = expected(ref)
+        # A candidate with no par tag could be ours — an unknown never loses
+        # to a known match, it goes to the proximity check alongside it.
+        unknown = [c for c in cands if c.get("par") is None]
+        matching = [c for c in cands if want is not None and c.get("par") == want]
+        if len(matching) == 1 and not unknown:
+            chosen[ref] = matching[0]
+        else:
+            unresolved[ref] = (matching + unknown) or cands
+
+    # Resolve collisions nearest their neighbours. Loop until every hole is
+    # placed: each pass anchors on what's resolved so far, and if nothing can
+    # be anchored (no par data at all, say) the lowest unresolved hole is
+    # seeded by distance from the course coordinate and chaining resumes.
+    while unresolved:
+        progressed = False
+        for ref in sorted(unresolved):
+            anchors = [chosen[n]["centroid"] for n in (ref - 1, ref + 1) if n in chosen]
+            if not anchors:
+                continue
+            chosen[ref] = min(
+                unresolved.pop(ref),
+                key=lambda c: sum(haversine_m(c["centroid"], a) for a in anchors),
+            )
+            progressed = True
+        if not progressed:
+            ref = min(unresolved)
+            chosen[ref] = min(unresolved.pop(ref), key=lambda c: c["distance_to_course"])
+    return chosen
+
+
 def fetch_course_geometry(
     course_lat: float,
     course_lng: float,
-    radius_m: int = 1500,
+    radius_m: int = 2000,
+    expected_pars: Optional[list] = None,
 ) -> dict:
     """Return parsed hole-level geometry for the course at (lat, lng).
 
+    expected_pars is the loaded scorecard's par per hole (18 ints). It lets
+    a 36-hole club's two courses be told apart — the course API pins both
+    to the same clubhouse coordinate, so proximity alone can't.
+
     Shape:
       {
+        "version": GEOMETRY_VERSION,
         "has_data": bool,
         "hole_count": int,
         "holes": {
@@ -162,9 +250,10 @@ def fetch_course_geometry(
         elif golf_tag == "pin":
             pins_raw.append(el)
 
-    # Many courses overlap others within our radius (e.g., Pebble Beach +
-    # Spyglass + Cypress). Filter to the 18 hole-polygons whose centroids
-    # are CLOSEST to the course centroid — that's almost always our course.
+    # The radius usually captures more than our course — a 36-hole club's
+    # other eighteen, or a neighbour's (Pebble + Spyglass + Cypress). Every
+    # candidate gets its par and centroid; select_course_holes picks one
+    # polygon per hole number.
     course_pt = (course_lat, course_lng)
     holes_with_centroids = []
     for h in holes_raw:
@@ -175,24 +264,21 @@ def fetch_course_geometry(
         c = centroid(poly)
         if c is None:
             continue
-        ref = (h.get("tags") or {}).get("ref", "")
-        if not ref.isdigit() or not (1 <= int(ref) <= 18):
+        tags = h.get("tags") or {}
+        ref = _hole_ref(tags)
+        if ref is None:
             continue
+        par_raw = str(tags.get("par") or "")
         holes_with_centroids.append({
-            "ref": int(ref),
+            "ref": ref,
+            "par": int(par_raw) if par_raw.isdigit() else None,
             "polygon": poly,
             "centroid": c,
             "distance_to_course": haversine_m(c, course_pt),
-            "tags": h.get("tags") or {},
+            "tags": tags,
         })
 
-    # When multiple holes share a ref number (adjacent course bleed-through),
-    # keep only the closest-to-course-centroid one per ref.
-    by_ref: dict = {}
-    for h in holes_with_centroids:
-        ref = h["ref"]
-        if ref not in by_ref or h["distance_to_course"] < by_ref[ref]["distance_to_course"]:
-            by_ref[ref] = h
+    by_ref = select_course_holes(holes_with_centroids, expected_pars)
 
     if not by_ref:
         return {"has_data": False, "hole_count": 0, "holes": {}}
@@ -251,21 +337,17 @@ def fetch_course_geometry(
 
         bearing = bearing_deg(tee_pt, green_pt)
         distance_m = haversine_m(tee_pt, green_pt)
-        par_raw = h["tags"].get("par")
-        try:
-            par = int(par_raw) if par_raw else None
-        except Exception:
-            par = None
 
         holes_out[str(ref)] = {
             "tee": [round(tee_pt[0], 6), round(tee_pt[1], 6)],
             "green": [round(green_pt[0], 6), round(green_pt[1], 6)],
             "bearing_deg": round(bearing, 1),
             "distance_yd": int(round(distance_m * 1.0936)),
-            "par": par,
+            "par": h.get("par"),
         }
 
     return {
+        "version": GEOMETRY_VERSION,
         "has_data": len(holes_out) > 0,
         "hole_count": len(holes_out),
         "holes": holes_out,

@@ -10,8 +10,12 @@ import pytest
 from datetime import datetime, timedelta, timezone
 
 from caddy_round import (
+    _courses_named_in,
     _extract_hole_number,
+    _name_match_score,
+    _same_facility,
     apply_score_to_round_state,
+    resolve_pending_course_choice,
     calculate_handicap,
     compute_round_status,
     detect_and_log_score,
@@ -402,6 +406,53 @@ class TestMightMentionCourse:
     def test_permissive_when_no_course_loaded(self):
         # bare "at " is enough before a course is loaded
         assert might_mention_course("i'm at pebble today", False) is True
+
+
+# ────────────────────────────────────────────────────────────
+# Multi-course club disambiguation (Quechee: Lakeland + Highland)
+# ────────────────────────────────────────────────────────────
+def _entry(club, course, lat=43.657, lng=-72.440, city="Quechee"):
+    return {"id": f"{club}-{course}".lower(), "club_name": club, "course_name": course,
+            "location": {"latitude": lat, "longitude": lng, "city": city, "state": "VT"}}
+
+
+QUECHEE = [_entry("Quechee Club", "Lakeland"), _entry("Quechee Club", "Highland")]
+
+
+class TestMultiCourseClub:
+    def test_same_facility_shares_name_and_location(self):
+        assert _same_facility(QUECHEE[0], QUECHEE[1]) is True
+
+    def test_same_name_far_apart_is_different(self):
+        fl = _entry("Quechee Club", "Main", lat=28.0, lng=-81.9, city="Lakeland")
+        assert _same_facility(QUECHEE[0], fl) is False
+
+    def test_player_named_the_course(self):
+        named = _courses_named_in(QUECHEE, "playing lakeland at quechee today")
+        assert [c["course_name"] for c in named] == ["Lakeland"]
+
+    def test_club_name_alone_names_nothing(self):
+        assert _courses_named_in(QUECHEE, "we're at quechee") == []
+
+    def test_course_name_equal_to_club_name_ignored(self):
+        single = [_entry("Butter Brook", "Butter Brook")]
+        assert _courses_named_in(single, "playing butter brook") == []
+
+    def test_pending_choice_resolves_from_answer(self):
+        pending = {"club_name": "Quechee Club",
+                   "options": [{"id": "a", "course_name": "Lakeland"}, {"id": "b", "course_name": "Highland"}]}
+        assert resolve_pending_course_choice("the highland course", pending)["id"] == "b"
+        assert resolve_pending_course_choice("Lakeland", pending)["id"] == "a"
+
+    def test_pending_choice_ignores_unrelated_reply(self):
+        pending = {"options": [{"id": "a", "course_name": "Lakeland"}, {"id": "b", "course_name": "Highland"}]}
+        assert resolve_pending_course_choice("165 to the pin", pending) is None
+        assert resolve_pending_course_choice("Lakeland", None) is None
+
+    def test_name_match_score_prefers_the_mentioned_club(self):
+        fl = _entry("Lakeland Golf Club", "Lakeland Golf Club", lat=28.0, lng=-81.9, city="Lakeland")
+        text = "playing lakeland at quechee"
+        assert _name_match_score(QUECHEE[0], text) > _name_match_score(fl, text)
 
 
 # ────────────────────────────────────────────────────────────

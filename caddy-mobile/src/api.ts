@@ -23,6 +23,7 @@ export type RoundState = {
 export type ChatEvent =
   | { type: "course_loaded"; course_name: string; tee_name: string }
   | { type: "course_not_found"; query: string }
+  | { type: "course_ambiguous"; club_name: string; options: string[] }
   | { type: "course_unloaded" }
   | { type: "tee_changed"; tee_name: string }
   | { type: "score_logged"; hole: number; score: number; par?: number | null }

@@ -7,6 +7,7 @@ obvious cases.
 import pytest
 
 from caddy_geo import (
+    _hole_ref,
     bearing_deg,
     compass_to_deg,
     compute_relative_wind,
@@ -16,7 +17,100 @@ from caddy_geo import (
     haversine_m,
     parse_wind_speed_mph,
     point_in_polygon,
+    select_course_holes,
 )
+
+
+# ────────────────────────────────────────────────────────────
+# Multi-course hole selection — real OSM data from the Quechee Club, VT
+# (36 holes at one clubhouse coordinate; every number 2-18 appears twice,
+# six of them with identical pars; Highland's 1st is tagged only by name;
+# Lakeland's 18th has no par tag at all).
+# ────────────────────────────────────────────────────────────
+QUECHEE_CLUBHOUSE = (43.6570521, -72.4403071)
+# (ref, par, lat, lon)
+QUECHEE_OSM_HOLES = [
+    (1, 4, 43.6561, -72.4391), (2, 4, 43.6557, -72.4383), (2, 5, 43.6513, -72.4386),
+    (3, 4, 43.6547, -72.4379), (3, 4, 43.6473, -72.4395), (4, 3, 43.6564, -72.4354),
+    (4, 4, 43.6444, -72.4402), (5, 5, 43.6551, -72.4318), (5, 5, 43.6449, -72.4412),
+    (6, 3, 43.6533, -72.4303), (6, 4, 43.6491, -72.4417), (7, 5, 43.6505, -72.4278),
+    (7, 4, 43.6515, -72.4407), (8, 3, 43.6483, -72.4271), (8, 3, 43.6527, -72.4400),
+    (9, 4, 43.6474, -72.4267), (9, 4, 43.6532, -72.4421), (10, 4, 43.6466, -72.4263),
+    (10, 4, 43.6556, -72.4440), (11, 5, 43.6474, -72.4306), (11, 4, 43.6555, -72.4478),
+    (12, 4, 43.6486, -72.4336), (12, 3, 43.6541, -72.4500), (13, 3, 43.6486, -72.4303),
+    (13, 4, 43.6500, -72.4473), (14, 4, 43.6488, -72.4293), (14, 5, 43.6474, -72.4479),
+    (15, 5, 43.6502, -72.4290), (15, 4, 43.6474, -72.4487), (16, 3, 43.6526, -72.4307),
+    (16, 4, 43.6509, -72.4488), (17, 4, 43.6548, -72.4325), (17, 3, 43.6541, -72.4508),
+    (18, None, 43.6549, -72.4359), (18, 5, 43.6562, -72.4463),
+    (1, 3, 43.6540, -72.4409),  # the way tagged name="Hole 1", ref missing
+]
+LAKELAND_PARS = [4, 4, 4, 3, 5, 3, 5, 3, 4, 4, 5, 4, 3, 4, 5, 3, 4, 5]
+HIGHLAND_PARS = [3, 5, 4, 4, 5, 4, 4, 3, 4, 4, 4, 3, 4, 5, 4, 4, 3, 5]
+
+
+def _quechee_candidates():
+    return [
+        {"ref": ref, "par": par, "centroid": (lat, lon), "polygon": [],
+         "distance_to_course": haversine_m((lat, lon), QUECHEE_CLUBHOUSE), "tags": {}}
+        for ref, par, lat, lon in QUECHEE_OSM_HOLES
+    ]
+
+
+class TestMultiCourseHoleSelection:
+    def _assert_one_course(self, chosen, pars):
+        assert sorted(chosen) == list(range(1, 19))
+        for ref, want in enumerate(pars, start=1):
+            got = chosen[ref]["par"]
+            assert got in (want, None), f"hole {ref}: par {got}, scorecard says {want}"
+        # Consecutive holes on one course sit near each other; the other
+        # course's same-numbered hole is a kilometre away.
+        for ref in range(2, 19):
+            gap = haversine_m(chosen[ref]["centroid"], chosen[ref - 1]["centroid"])
+            assert gap < 700, f"hole {ref} is {gap:.0f} m from hole {ref - 1} — wrong course"
+
+    def test_lakeland_resolves_to_one_course(self):
+        chosen = select_course_holes(_quechee_candidates(), LAKELAND_PARS)
+        self._assert_one_course(chosen, LAKELAND_PARS)
+        # The untagged-par 18th must go to Lakeland by proximity, not lose
+        # to Highland's tagged par-5 18th.
+        assert chosen[18]["centroid"] == (43.6549, -72.4359)
+
+    def test_highland_resolves_to_one_course(self):
+        chosen = select_course_holes(_quechee_candidates(), HIGHLAND_PARS)
+        self._assert_one_course(chosen, HIGHLAND_PARS)
+        assert chosen[1]["centroid"] == (43.6540, -72.4409)  # the name-only "Hole 1"
+
+    def test_two_courses_share_no_holes(self):
+        lake = select_course_holes(_quechee_candidates(), LAKELAND_PARS)
+        high = select_course_holes(_quechee_candidates(), HIGHLAND_PARS)
+        overlap = [r for r in range(1, 19) if lake[r]["centroid"] == high[r]["centroid"]]
+        assert overlap == []
+
+    def test_no_scorecard_still_yields_a_coherent_course(self):
+        # Without pars we can't know WHICH course, but chaining from the
+        # nearest hole 1 must still produce one contiguous course, not a mix.
+        chosen = select_course_holes(_quechee_candidates(), None)
+        assert sorted(chosen) == list(range(1, 19))
+        for ref in range(2, 19):
+            assert haversine_m(chosen[ref]["centroid"], chosen[ref - 1]["centroid"]) < 700
+
+    def test_single_course_untouched(self):
+        cands = [c for c in _quechee_candidates() if c["centroid"][1] < -72.438]  # west course only
+        chosen = select_course_holes(cands, HIGHLAND_PARS)
+        assert len(chosen) == 18
+
+
+class TestHoleRef:
+    def test_ref_tag(self):
+        assert _hole_ref({"ref": "7"}) == 7
+
+    def test_name_fallback(self):
+        assert _hole_ref({"name": "Hole 1"}) == 1
+        assert _hole_ref({"ref": "0", "name": "Hole 12"}) == 12
+
+    def test_out_of_range(self):
+        assert _hole_ref({"ref": "19"}) is None
+        assert _hole_ref({"name": "Practice green"}) is None
 
 
 class TestCompass:

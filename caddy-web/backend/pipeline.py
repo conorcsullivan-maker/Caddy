@@ -17,8 +17,10 @@ from caddy_round import (
     apply_score_to_round_state, calculate_handicap, compute_round_status,
     detect_and_load_course, detect_and_log_score, detect_and_update_tee,
     detect_approach_shot, detect_course_note, detect_gps_shot,
-    extract_club_mention, extract_miss_direction, format_course_context,
-    format_score_context, infer_drive_distance, is_end_of_round, save_hole_note,
+    extract_club_mention, extract_miss_direction, extract_tee_color, find_tee,
+    format_course_context, format_score_context, get_course,
+    infer_drive_distance, is_end_of_round, resolve_pending_course_choice,
+    save_hole_note,
 )
 from caddy_weather import fetch_weather, format_weather_context, has_critical_alert
 from caddy_geo import format_gps_yardage_context, format_relative_wind_context
@@ -89,9 +91,24 @@ def process_user_message(user: dict, message: str,
 
     # 2. Course detection (only if no course loaded). Returns either a loaded course,
     # a "not_found" signal so Caddy can offer alternatives, or None.
-    course_load = detect_and_load_course(message, round_state, player_lat=lat, player_lng=lng)
+    # If Caddy just asked which course at a multi-course club, the player's
+    # answer ("Lakeland") resolves it directly — no re-detection needed.
+    course_load = None
+    pending_choice = round_state.get("pending_course_choice")
+    chosen = resolve_pending_course_choice(message, pending_choice)
+    if chosen:
+        full = get_course(chosen["id"])
+        tee = find_tee(full, extract_tee_color(message)) if full else None
+        if full and tee:
+            course_load = {
+                "status": "loaded", "course": full, "tee": tee,
+                "distance_miles": pending_choice.get("distance_miles"),
+            }
+    if course_load is None:
+        course_load = detect_and_load_course(message, round_state, player_lat=lat, player_lng=lng)
     course_loaded_now = False
     course_not_found_query: Optional[str] = None
+    course_ambiguous: Optional[dict] = None
     course_load_distance: Optional[float] = None
     if course_load and course_load.get("status") in ("loaded", "switched"):
         is_switch = course_load.get("status") == "switched"
@@ -124,6 +141,20 @@ def process_user_message(user: dict, message: str,
     elif course_load and course_load.get("status") == "not_found":
         course_not_found_query = course_load.get("query")
         events.append({"type": "course_not_found", "query": course_not_found_query})
+    elif course_load and course_load.get("status") == "ambiguous":
+        course_ambiguous = course_load
+        round_state["pending_course_choice"] = {
+            "club_name": course_load.get("club_name"),
+            "options": course_load.get("options") or [],
+            "distance_miles": course_load.get("distance_miles"),
+        }
+        events.append({
+            "type": "course_ambiguous",
+            "club_name": course_load.get("club_name"),
+            "options": [o.get("course_name") for o in course_load.get("options") or []],
+        })
+    if course_loaded_now:
+        round_state.pop("pending_course_choice", None)
 
     # Snapshot the hole BEFORE score detection can advance it — the GPS move
     # since the last message happened on the hole the player WAS on.
@@ -319,6 +350,15 @@ def process_user_message(user: dict, message: str,
                 f"Keep moving regardless — don't wait to be told yes."
             )
         round_context += f"\n\nNOTE: Course just auto-loaded: {_course.get('club_name')}{_loc_str}. {_trust_note}"
+    elif course_ambiguous:
+        _opts = [o.get("course_name") for o in course_ambiguous.get("options") or [] if o.get("course_name")]
+        _opts_str = " or ".join(_opts) if len(_opts) <= 2 else ", ".join(_opts[:-1]) + f", or {_opts[-1]}"
+        round_context += (
+            f"\n\nNOTE: {course_ambiguous.get('club_name')} has more than one course and the player "
+            f"didn't say which: {_opts_str}. Nothing is loaded yet. Answer whatever they asked, then "
+            f"ask in one short phrase which course they're on (e.g. \"{_opts[0]} or {_opts[-1]} today?\"). "
+            f"Their next answer loads it."
+        )
     elif course_not_found_query:
         # Course was mentioned but lookup failed — make the scorecard-photo
         # option crystal clear because it unlocks all the course intelligence

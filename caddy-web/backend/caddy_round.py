@@ -642,6 +642,21 @@ def search_course(query: str) -> list:
         if results:
             return results
 
+    # 3b. Each distinctive word on its own, results pooled. "Quechee Lakeland"
+    # names a club AND one of its courses — the API only matches club names,
+    # so the pair finds nothing but "Quechee" alone finds all four entries.
+    # Pooling (not first-hit) keeps a same-named club elsewhere from winning
+    # by word order; the caller ranks by GPS and name match.
+    pooled: dict = {}
+    for w in query.split():
+        w_clean = w.strip(".,!?'\"")
+        if len(w_clean) < 5 or w_clean.lower() in stop_suffixes:
+            continue
+        for r in _raw_search(w_clean) or []:
+            pooled.setdefault(r.get("id"), r)
+    if pooled:
+        return list(pooled.values())
+
     # 4. Last resort: ask Claude for alternative spellings (handles Whisper
     # transcription quirks like 'Butterbrook' vs 'Butter Brook')
     for alt in _get_alternative_spellings(query):
@@ -799,13 +814,26 @@ def detect_and_load_course(
     if not candidates:
         return {"status": "not_found", "query": result}
 
+    # Pull details once and drop entries with no tee data — the API carries
+    # stub rows (Quechee's "Flood Composite") that can't be played from and
+    # would otherwise win a coordinate tie by being listed first.
+    detailed = []
+    for c in candidates[:8]:
+        full = get_course(c["id"])
+        if full and find_tee(full):
+            detailed.append(full)
+    if not detailed:
+        return {"status": "not_found", "query": result}
+
     # Picking strategy in priority order:
     # 1. If the player explicitly mentioned a city or state, prefer the
     #    candidate whose location matches. This overrides GPS — a player
     #    in Boston talking about an Oklahoma City course is naming a
     #    destination, not their current GPS location.
     # 2. Else if GPS available, pick the closest candidate.
-    # 3. Else pick the first search result.
+    # 3. Else the candidate whose club/course name best matches what
+    #    the player said, then the first search result.
+    # Whichever wins, a multi-course club is disambiguated afterwards.
     course_data: Optional[dict] = None
     distance_miles: Optional[float] = None
 
@@ -824,9 +852,8 @@ def detect_and_load_course(
         return False
 
     if stated_city or stated_state:
-        for c in candidates[:8]:
-            full = get_course(c["id"])
-            if full and _course_matches_stated_location(full):
+        for full in detailed:
+            if _course_matches_stated_location(full):
                 course_data = full
                 if player_lat is not None and player_lng is not None:
                     ll = _course_lat_lng(full)
@@ -836,9 +863,8 @@ def detect_and_load_course(
 
     if course_data is None and player_lat is not None and player_lng is not None:
         best_distance = float("inf")
-        for c in candidates[:8]:
-            full = get_course(c["id"])
-            ll = _course_lat_lng(full) if full else None
+        for full in detailed:
+            ll = _course_lat_lng(full)
             if not ll:
                 continue
             d = _haversine_miles(player_lat, player_lng, ll[0], ll[1])
@@ -848,9 +874,27 @@ def detect_and_load_course(
                 distance_miles = d
 
     if course_data is None:
-        course_data = get_course(candidates[0]["id"])
-    if not course_data:
-        return {"status": "not_found", "query": result}
+        course_data = max(detailed, key=lambda c: _name_match_score(c, text + " " + result))
+
+    # Multi-course club: the winner's siblings share its name and location.
+    # If the player named one of the courses, take it; otherwise we have to
+    # ask — guessing loads the wrong scorecard and the wrong hole geometry.
+    siblings = [c for c in detailed if _same_facility(c, course_data)]
+    if len(siblings) > 1:
+        named = _courses_named_in(siblings, text + " " + result)
+        if len(named) == 1:
+            course_data = named[0]
+        elif len({(c.get("course_name") or "").lower() for c in siblings}) > 1:
+            return {
+                "status": "ambiguous",
+                "query": result,
+                "club_name": course_data.get("club_name"),
+                "options": [
+                    {"id": c.get("id"), "course_name": c.get("course_name")}
+                    for c in siblings
+                ],
+                "distance_miles": distance_miles,
+            }
 
     tee_color = extract_tee_color(text)
     tee = find_tee(course_data, tee_color)
@@ -863,6 +907,53 @@ def detect_and_load_course(
         "tee": tee,
         "distance_miles": distance_miles,
     }
+
+
+def _same_facility(a: dict, b: dict) -> bool:
+    """Two API entries for the same club — same club name and (when both
+    have coordinates) within half a mile. The API pins every course at a
+    36-hole club to one clubhouse coordinate."""
+    if (a.get("club_name") or "").strip().lower() != (b.get("club_name") or "").strip().lower():
+        return False
+    la, lb = _course_lat_lng(a), _course_lat_lng(b)
+    if la and lb:
+        return _haversine_miles(la[0], la[1], lb[0], lb[1]) < 0.5
+    return True
+
+
+def _courses_named_in(courses: list, text: str) -> list:
+    """Courses whose own name (not the club's) appears in the text —
+    "playing Lakeland at Quechee" → the Lakeland entry."""
+    text_l = text.lower()
+    out = []
+    for c in courses:
+        name = (c.get("course_name") or "").strip().lower()
+        club = (c.get("club_name") or "").strip().lower()
+        if name and name != club and len(name) >= 4 and name in text_l:
+            out.append(c)
+    return out
+
+
+def _name_match_score(course: dict, text: str) -> int:
+    """How many distinctive words of the player's text appear in this
+    entry's club name, course name, or city. Breaks ties when neither a
+    stated location nor GPS can."""
+    hay = " ".join(str(course.get(k) or "") for k in ("club_name", "course_name")).lower()
+    loc = course.get("location") or {}
+    if isinstance(loc, dict):
+        hay += " " + str(loc.get("city") or "").lower()
+    words = {w.strip(".,!?'\"").lower() for w in text.split()}
+    return sum(1 for w in words if len(w) >= 4 and w in hay)
+
+
+def resolve_pending_course_choice(text: str, pending: Optional[dict]) -> Optional[dict]:
+    """After Caddy asked which course at a multi-course club, match the
+    player's answer against the options. Returns the chosen option
+    ({"id", "course_name"}) or None if the reply doesn't name one."""
+    if not pending:
+        return None
+    named = _courses_named_in(pending.get("options") or [], text)
+    return named[0] if len(named) == 1 else None
 
 
 # ────────────────────────────────────────────────────────────

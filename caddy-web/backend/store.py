@@ -11,6 +11,7 @@ from typing import Optional
 
 from db import db, now_iso
 from caddy_geo import (
+    GEOMETRY_VERSION,
     compute_relative_wind,
     fetch_course_geometry,
     gps_yards_to_green,
@@ -274,6 +275,21 @@ def record_trackman_session_stats(user_id: int, per_club_stats: dict) -> None:
 GEO_RETRY_AFTER_DAYS = 7
 
 
+def scorecard_pars(course: dict) -> Optional[list]:
+    """The course's par per hole from the first tee set that has a full 18 —
+    what fetch_course_geometry uses to tell a 36-hole club's courses apart.
+    Par doesn't vary by tee, so any complete set will do."""
+    tees = course.get("tees") or {}
+    for gender in ("male", "female"):
+        for tee in tees.get(gender) or []:
+            holes = tee.get("holes") or []
+            if len(holes) >= 18:
+                pars = [h.get("par") for h in holes[:18]]
+                if all(isinstance(p, int) for p in pars):
+                    return pars
+    return None
+
+
 def _course_cache_key(course: dict) -> Optional[tuple]:
     """Stable (source, id) key for caching geometry per course. Returns None
     if the course doesn't have a usable id."""
@@ -336,8 +352,11 @@ def save_course_geometry(course: dict, geometry: dict) -> None:
 def _should_retry_geometry_fetch(geo: Optional[dict]) -> bool:
     """If we have nothing cached, fetch. If the cache says no_data but the
     entry is older than GEO_RETRY_AFTER_DAYS, try again (OSM may have been
-    edited)."""
+    edited). A cache written by an older parser version is refetched
+    regardless — the hole selection changed, so its contents may be wrong."""
     if geo is None:
+        return True
+    if geo.get("version", 1) < GEOMETRY_VERSION:
         return True
     if geo.get("_has_data"):
         return False
@@ -361,7 +380,9 @@ def _fetch_and_cache_geometry(course: dict) -> None:
             # Without coords, mark as no_data so we don't keep retrying
             save_course_geometry(course, {"has_data": False, "hole_count": 0, "holes": {}})
             return
-        geo = fetch_course_geometry(float(lat), float(lng))
+        geo = fetch_course_geometry(
+            float(lat), float(lng), expected_pars=scorecard_pars(course)
+        )
         save_course_geometry(course, geo)
         if geo.get("has_data"):
             print(f"[geo] cached geometry for {course.get('club_name')}: {geo['hole_count']} holes")
