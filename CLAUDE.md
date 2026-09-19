@@ -2,7 +2,7 @@
 
 Co-founded by Conor Sullivan (`sullydakid`) and Drew Smiley (`smiley`). Live beta at [caddy-sepia.vercel.app](https://caddy-sepia.vercel.app).
 
-This CLAUDE.md is loaded automatically when working anywhere under `~/Desktop/Caddy/`. Read it before making changes.
+This CLAUDE.md is loaded automatically when working anywhere under `~/Desktop/Personal/Caddy/`. Read it before making changes.
 
 ---
 
@@ -61,17 +61,17 @@ Caddy/
 
 **Frontend (port 3000):**
 ```
-cd ~/Desktop/Caddy/caddy-web/frontend && npm run dev
+cd ~/Desktop/Personal/Caddy/caddy-web/frontend && npm run dev
 ```
 
 **Backend (port 8000):**
 ```
-cd ~/Desktop/Caddy/caddy-web/backend && source venv/bin/activate && python3 main.py
+cd ~/Desktop/Personal/Caddy/caddy-web/backend && source venv/bin/activate && python3 main.py
 ```
 
 Frontend proxies `/api/*` to `localhost:8000` in dev. Local SQLite at `caddy-web/backend/caddy.db`.
 
-**Env** (`~/Desktop/Caddy/.env`): `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOLF_COURSE_API_KEY`. Also `BOOTSTRAP_ADMIN_USERNAME=sullydakid` + `BOOTSTRAP_ADMIN_PIN=6252` to seed the first admin on a fresh DB.
+**Env** (`~/Desktop/Personal/Caddy/.env`): `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOLF_COURSE_API_KEY`. Also `BOOTSTRAP_ADMIN_USERNAME=sullydakid` + `BOOTSTRAP_ADMIN_PIN=6252` to seed the first admin on a fresh DB.
 
 ---
 
@@ -95,6 +95,7 @@ Frontend proxies `/api/*` to `localhost:8000` in dev. Local SQLite at `caddy-web
 8. **Export allowlist** is hardcoded `{"sullydakid", "smiley"}` in main.py — deliberately not gated on `is_admin` so future admins don't silently get export rights.
 9. **Claude Haiku wraps JSON in markdown fences.** `_extract_json` in `caddy_round.py` handles it — don't bypass.
 10. **Partial-round `differential`** produces nonsense; the calc assumes 18 holes. Add a guard if we start supporting partial rounds properly.
+11. **Never pick hole geometry by distance alone.** Golf Course API entries at a multi-course club share one coordinate; OSM hole polygons carry no course name. Hole selection must go through `select_course_holes` with the scorecard's pars. Bump `GEOMETRY_VERSION` whenever the parser's output could change.
 
 ---
 
@@ -137,6 +138,8 @@ Events (`round_state`, `weather`, `events: ChatEvent[]`) are returned to the fro
 
 ## Recent significant changes (chronological, most recent first)
 
+**Multi-course clubs** *(2026-09-19, commit `f8d8cb0`)* — the course API pins every course at a club to ONE coordinate, which broke two things at 36-hole clubs (found via Quechee: Highland + Lakeland). Geometry: `select_course_holes` in caddy_geo.py picks polygons by the loaded scorecard's par per hole + proximity to neighbouring holes (store.py passes `scorecard_pars(course)`); `GEOMETRY_VERSION` on cached geometry forces a refetch after parser changes; radius is 2000 m. Selection: tee-less API stubs dropped, sibling courses matched by name in the player's text, else `status: "ambiguous"` → `pending_course_choice` in round state → Caddy asks → `resolve_pending_course_choice` on the next message. `search_course` pools single-word hits so "Quechee Lakeland" finds the club. Tests use real Quechee OSM data.
+
 **Mobile voice** *(2026-07-04)* — expo-audio mic → `/api/caddy/voice` (m4a); TTS streams from new `GET /api/caddy/speak` via expo-audio AudioSource with bearer headers. Mute toggle, iOS audio-mode handling (allowsRecording on before prepare, off before playback) in `caddy-mobile/src/screens/ChatScreen.tsx`. Whisper verified live with a real m4a. Remaining mobile gaps: background location (dev build), profile screens, TestFlight.
 
 **Caddy Mobile v0.1** *(2026-07-03)* — Expo/RN app in `caddy-mobile/` (login, chat, GPS per message, round bar, weather, camera). Bearer-token auth added to the backend (`deps.py` accepts `Authorization: Bearer`, login returns `token` in body); mobile talks straight to Render, no proxy. Run: `cd caddy-mobile && npx expo start` → Expo Go. Next: voice, background location (dev build), profile screens.
@@ -177,7 +180,7 @@ Events (`round_state`, `weather`, `events: ChatEvent[]`) are returned to the fro
 - **Session transcripts**: search via `mcp__ccd_session_mgmt__search_session_transcripts` (deferred tool — load via ToolSearch first)
 - **Live Overpass sanity check**: `/tmp/osm_holes.py` (throwaway; useful reference for query shape)
 - **Drew's beta feedback template**: `~/Desktop/Caddy_Beta_Feedback_Drew.docx`
-- **Product notes / idea binder generator**: `~/Desktop/Caddy/make_idea_binder.js` (`NODE_PATH=/opt/homebrew/lib/node_modules node ...`)
+- **Product notes / idea binder generator**: `~/Desktop/Personal/Caddy/make_idea_binder.js` (`NODE_PATH=/opt/homebrew/lib/node_modules node ...`)
 
 ---
 
